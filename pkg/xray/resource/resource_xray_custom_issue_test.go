@@ -274,7 +274,6 @@ func TestAccCustomIssue_full(t *testing.T) {
 				ResourceName:                         fqrn,
 				ImportState:                          true,
 				ImportStateVerify:                    true,
-				ImportStateVerifyIdentifierAttribute: "name",
 			},
 		},
 	})

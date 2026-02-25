@@ -644,7 +644,7 @@ func (r *CustomIssueResource) Read(ctx context.Context, req resource.ReadRequest
 	var customIssue CustomIssueAPIModel
 
 	response, err := r.ProviderData.Client.R().
-		SetPathParam("id", state.Name.ValueString()).
+		SetPathParam("id", state.ID.ValueString()).
 		SetResult(&customIssue).
 		Get(CustomIssueEndpointV2)
 	if err != nil {
@@ -684,7 +684,7 @@ func (r *CustomIssueResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 
 	response, err := r.ProviderData.Client.R().
-		SetPathParam("id", plan.Name.ValueString()).
+		SetPathParam("id", plan.ID.ValueString()).
 		SetBody(customIssue).
 		Put(CustomIssueEndpoint)
 	if err != nil {
@@ -711,7 +711,7 @@ func (r *CustomIssueResource) Delete(ctx context.Context, req resource.DeleteReq
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 
 	response, err := r.ProviderData.Client.R().
-		SetPathParam("id", state.Name.ValueString()).
+		SetPathParam("id", state.ID.ValueString()).
 		Delete(CustomIssueEndpoint)
 
 	if err != nil {
@@ -730,5 +730,5 @@ func (r *CustomIssueResource) Delete(ctx context.Context, req resource.DeleteReq
 
 // ImportState imports the resource into the Terraform state.
 func (r *CustomIssueResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
