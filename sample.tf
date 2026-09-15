@@ -3,7 +3,7 @@ terraform {
   required_providers {
     xray = {
       source  = "jfrog/xray"
-      version = "3.0.6"
+      version = "3.1.7"
     }
   }
 }
@@ -58,6 +58,7 @@ resource "xray_security_policy" "security1" {
       notify_watch_recipients            = true
       notify_deployer                    = true
       create_ticket_enabled              = false // set to true only if Jira integration is enabled
+      fail_pull_request                  = true
       build_failure_grace_period_in_days = 5     // use only if fail_build is enabled
 
       block_download {
@@ -93,6 +94,7 @@ resource "xray_security_policy" "security2" {
       notify_watch_recipients            = true
       notify_deployer                    = true
       create_ticket_enabled              = false // set to true only if Jira integration is enabled
+      fail_pull_request                  = true
       build_failure_grace_period_in_days = 5     // use only if fail_build is enabled
 
       block_download {
@@ -126,6 +128,7 @@ resource "xray_license_policy" "license1" {
       notify_watch_recipients            = true
       notify_deployer                    = true
       create_ticket_enabled              = false // set to true only if Jira integration is enabled
+      fail_pull_request                  = true
       custom_severity                    = "High"
       build_failure_grace_period_in_days = 5 // use only if fail_build is enabled
 
@@ -160,6 +163,7 @@ resource "xray_license_policy" "license2" {
       notify_watch_recipients            = true
       notify_deployer                    = true
       create_ticket_enabled              = false // set to true only if Jira integration is enabled
+      fail_pull_request                  = true
       custom_severity                    = "Medium"
       build_failure_grace_period_in_days = 5 // use only if fail_build is enabled
 
@@ -650,4 +654,24 @@ resource "xray_ignore_rule" "ignore-rule-2590579" {
       categories = [ "secrets" , "applications" ]
       file_path  = ["/path/to/file"]
   }
+}
+
+# Default indexer (no project). Use this only for default-scope Release Bundles V2.
+resource "xray_binary_manager_release_bundles_v2" "my-indexed-release-bundles" {
+  id                        = "default"
+  indexed_release_bundle_v2 = ["my-release-bundle-1", "my-release-bundle-2"]
+}
+
+# Same Release Bundle V2 name is valid in different projects. Use one resource
+# per project_key; do not list both on the default resource above.
+resource "xray_binary_manager_release_bundles_v2" "project-a" {
+  id                        = "default"
+  project_key               = "project-a"
+  indexed_release_bundle_v2 = ["my-release-bundle"]
+}
+
+resource "xray_binary_manager_release_bundles_v2" "project-b" {
+  id                        = "default"
+  project_key               = "project-b"
+  indexed_release_bundle_v2 = ["my-release-bundle"]
 }

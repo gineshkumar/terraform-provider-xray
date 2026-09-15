@@ -41,6 +41,7 @@ resource "xray_security_policy" "min_severity" {
       notify_watch_recipients            = true
       notify_deployer                    = true
       create_ticket_enabled              = false // set to true only if Jira integration is enabled
+      fail_pull_request                  = true
       build_failure_grace_period_in_days = 5     // use only if fail_build is enabled
 
       block_download {
@@ -77,6 +78,42 @@ resource "xray_security_policy" "cvss_score" {
       notify_watch_recipients            = true
       notify_deployer                    = true
       create_ticket_enabled              = false // set to true only if Jira integration is enabled
+      fail_pull_request                  = true
+      build_failure_grace_period_in_days = 5     // use only if fail_build is enabled
+
+      block_download {
+        unscanned = true
+        active    = true
+      }
+    }
+  }
+}
+
+resource "xray_security_policy" "sast" {
+  name        = "test-security-policy-sast"
+  description = "Security policy description"
+  type        = "security"
+  project_key = "testproj"
+
+  rule {
+    name     = "rule-name-sast"
+    priority = 1
+
+    criteria {
+      sast {
+        min_severity = "Low"
+      }
+    }
+
+    actions {
+      webhooks                           = []
+      mails                              = ["test@email.com"]
+      block_release_bundle_distribution  = true
+      fail_build                         = true
+      notify_watch_recipients            = true
+      notify_deployer                    = true
+      create_ticket_enabled              = false // set to true only if Jira integration is enabled
+      fail_pull_request                  = true
       build_failure_grace_period_in_days = 5     // use only if fail_build is enabled
 
       block_download {
@@ -109,6 +146,7 @@ resource "xray_security_policy" "malicious_package" {
       notify_watch_recipients            = true
       notify_deployer                    = true
       create_ticket_enabled              = false // set to true only if Jira integration is enabled
+      fail_pull_request                  = true
       build_failure_grace_period_in_days = 5     // use only if fail_build is enabled
 
       block_download {
@@ -165,6 +203,7 @@ Optional:
 - `build_failure_grace_period_in_days` (Number) Allow grace period for certain number of days. All violations will be ignored during this time. To be used only if `fail_build` is enabled. Default value is `0`
 - `create_ticket_enabled` (Boolean) Create Jira Ticket for this Policy Violation. Requires configured Jira integration. Default value is `false`.
 - `fail_build` (Boolean) Whether or not the related CI build should be marked as failed if a violation is triggered. This option is only available when the policy is applied to an `xray_watch` resource with a `type` of `builds`. Default value is `false`.
+- `fail_pull_request` (Boolean) Whether or not the related pull request should be marked as failed if a violation is triggered. Default value is `false`.
 - `mails` (Set of String) A list of email addressed that will get emailed when a violation is triggered.
 - `notify_deployer` (Boolean) Sends an email message to component deployer with details about the generated Violations. Default value is `false`.
 - `notify_watch_recipients` (Boolean) Sends an email message to all configured recipients inside a specific watch with details about the generated Violations. Default value is `false`.
@@ -176,6 +215,7 @@ Optional:
 Optional:
 
 - `active` (Boolean) Whether or not to block download of artifacts that meet the artifact and severity `filters` for the associated `xray_watch` resource. Default value is `false`.
+- `grace_period_days` (Number) Grace period in days before blocking download of artifacts that meet the policy. Matches the Xray Policy REST API `grace_period_days` on `block_download`. Default is `0`.
 - `unscanned` (Boolean) Whether or not to block download of artifacts that meet the artifact `filters` for the associated `xray_watch` resource but have not been scanned yet. Can not be set to `true` if attribute `active` is `false`. Default value is `false`.
 
 
@@ -194,10 +234,13 @@ Optional:
 ~>Only supported by JFrog Advanced Security (see [below for nested schema](#nestedblock--rule--criteria--exposures))
 - `fix_version_dependant` (Boolean) Issues that do not have a fixed version are not generated until a fixed version is available. Must be `false` with `malicious_package` enabled.
 - `malicious_package` (Boolean) Generating a violation on a malicious package.
-- `min_severity` (String) The minimum security vulnerability severity that will be impacted by the policy. Valid values: `All Severities`, `Critical`, `High`, `Medium`, `Low`
+- `min_severity` (String) The minimum security vulnerability severity that will be impacted by the policy. Valid values: `All severities`, `Critical`, `High`, `Medium`, `Low` (case-insensitive; the UI label `All Severities` is accepted).
 - `package_name` (String) The package name to create a rule for
 - `package_type` (String) The package type to create a rule for
-- `package_versions` (List of String) package versions to apply the rule on can be (,) for any version or an open range (1,4) or closed [1,4] or one version [1]
+- `package_versions` (List of String) package versions to apply the rule on can be (,) for any version or an open range (1,4) or closed [1,4], one version in brackets, or a bare version string
+- `sast` (Block List) Creates policy rules for SAST (Static Application Security Testing) findings.
+
+~>Only supported by JFrog Advanced Security (see [below for nested schema](#nestedblock--rule--criteria--sast))
 - `vulnerability_ids` (List of String) Creates policy rules for specific vulnerability IDs that you input. You can add multiple vulnerabilities IDs. CVEs and Xray IDs are supported. Example - CVE-2015-20107, XRAY-2344
 
 <a id="nestedblock--rule--criteria--cvss_range"></a>
@@ -216,9 +259,17 @@ Optional:
 
 - `applications` (Boolean) Applications exposures.
 - `iac` (Boolean) Iac exposures.
-- `min_severity` (String) The minimum security vulnerability severity that will be impacted by the policy. Valid values: `All Severities`, `Critical`, `High`, `Medium`, `Low`
+- `min_severity` (String) The minimum security vulnerability severity that will be impacted by the policy. Valid values: `All severities`, `Critical`, `High`, `Medium`, `Low` (case-insensitive; the UI label `All Severities` is accepted).
 - `secrets` (Boolean) Secrets exposures.
 - `services` (Boolean) Services exposures.
+
+
+<a id="nestedblock--rule--criteria--sast"></a>
+### Nested Schema for `rule.criteria.sast`
+
+Required:
+
+- `min_severity` (String) The minimum SAST vulnerability severity that will be impacted by the policy. Valid values: `All severities`, `Critical`, `High`, `Medium`, `Low` (case-insensitive; the UI label `All Severities` is accepted).
 
 ## Import
 

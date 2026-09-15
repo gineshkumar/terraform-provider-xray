@@ -45,8 +45,14 @@ func (v decisionOwnersRequiredValidator) ValidateString(ctx context.Context, req
 			return
 		}
 
-		// Check if decision_owners is null, unknown, or empty
-		if decisionOwnersValue.IsNull() || decisionOwnersValue.IsUnknown() {
+		// Skip validation for unknown values (e.g. references to other resources
+		// that aren't resolved until plan/apply); defer to the plan phase.
+		if decisionOwnersValue.IsUnknown() {
+			return
+		}
+
+		// Check if decision_owners is null or empty
+		if decisionOwnersValue.IsNull() {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("decision_owners"),
 				"Decision owners required",
@@ -165,11 +171,31 @@ func (v scopeRequirementsValidator) ValidateString(ctx context.Context, req vali
 		return
 	}
 
+	// Get the share_with_federation value
+	var shareWithFederationValue attr.Value
+	diags = req.Config.GetAttribute(ctx, path.Root("share_with_federation"), &shareWithFederationValue)
+	if diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
+
 	// Check requirements based on scope
 	switch scope {
 	case "specific_repos":
+		// share_with_federation is only allowed for all_repos or pkg_types scopes
+		if !shareWithFederationValue.IsNull() && !shareWithFederationValue.IsUnknown() {
+			if fedBool, ok := shareWithFederationValue.(types.Bool); ok && fedBool.ValueBool() {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("share_with_federation"),
+					"Share with federation not allowed",
+					"share_with_federation cannot be true when scope is 'specific_repos'; it is only allowed for 'all_repos' or 'pkg_types'",
+				)
+			}
+		}
+
 		// repo_include is mandatory
-		if repoIncludeValue.IsNull() || (repoIncludeValue.(types.Set)).IsNull() || len((repoIncludeValue.(types.Set)).Elements()) == 0 {
+		// Skip validation if the value is unknown (e.g., computed from module variables)
+		if !repoIncludeValue.IsUnknown() && (repoIncludeValue.IsNull() || (repoIncludeValue.(types.Set)).IsNull() || len((repoIncludeValue.(types.Set)).Elements()) == 0) {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("repo_include"),
 				"Repository include required",
@@ -178,14 +204,14 @@ func (v scopeRequirementsValidator) ValidateString(ctx context.Context, req vali
 		}
 
 		// pkg_types_include and repo_exclude should not be used
-		if !pkgTypesIncludeValue.IsNull() && len((pkgTypesIncludeValue.(types.Set)).Elements()) > 0 {
+		if !pkgTypesIncludeValue.IsNull() && !pkgTypesIncludeValue.IsUnknown() && len((pkgTypesIncludeValue.(types.Set)).Elements()) > 0 {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("pkg_types_include"),
 				"Package types include not allowed",
 				"pkg_types_include cannot be used when scope is 'specific_repos'",
 			)
 		}
-		if !repoExcludeValue.IsNull() && len((repoExcludeValue.(types.Set)).Elements()) > 0 {
+		if !repoExcludeValue.IsNull() && !repoExcludeValue.IsUnknown() && len((repoExcludeValue.(types.Set)).Elements()) > 0 {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("repo_exclude"),
 				"Repository exclude not allowed",
@@ -195,7 +221,8 @@ func (v scopeRequirementsValidator) ValidateString(ctx context.Context, req vali
 
 	case "pkg_types":
 		// pkg_types_include is mandatory
-		if pkgTypesIncludeValue.IsNull() || (pkgTypesIncludeValue.(types.Set)).IsNull() || len((pkgTypesIncludeValue.(types.Set)).Elements()) == 0 {
+		// Skip validation if the value is unknown (e.g., computed from module variables)
+		if !pkgTypesIncludeValue.IsUnknown() && (pkgTypesIncludeValue.IsNull() || (pkgTypesIncludeValue.(types.Set)).IsNull() || len((pkgTypesIncludeValue.(types.Set)).Elements()) == 0) {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("pkg_types_include"),
 				"Package types include required",
@@ -204,14 +231,14 @@ func (v scopeRequirementsValidator) ValidateString(ctx context.Context, req vali
 		}
 
 		// repo_include and repo_exclude should not be used
-		if !repoIncludeValue.IsNull() && len((repoIncludeValue.(types.Set)).Elements()) > 0 {
+		if !repoIncludeValue.IsNull() && !repoIncludeValue.IsUnknown() && len((repoIncludeValue.(types.Set)).Elements()) > 0 {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("repo_include"),
 				"Repository include not allowed",
 				"repo_include cannot be used when scope is 'pkg_types'",
 			)
 		}
-		if !repoExcludeValue.IsNull() && len((repoExcludeValue.(types.Set)).Elements()) > 0 {
+		if !repoExcludeValue.IsNull() && !repoExcludeValue.IsUnknown() && len((repoExcludeValue.(types.Set)).Elements()) > 0 {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("repo_exclude"),
 				"Repository exclude not allowed",
@@ -221,14 +248,14 @@ func (v scopeRequirementsValidator) ValidateString(ctx context.Context, req vali
 
 	case "all_repos":
 		// repo_include and pkg_types_include should not be used
-		if !repoIncludeValue.IsNull() && len((repoIncludeValue.(types.Set)).Elements()) > 0 {
+		if !repoIncludeValue.IsNull() && !repoIncludeValue.IsUnknown() && len((repoIncludeValue.(types.Set)).Elements()) > 0 {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("repo_include"),
 				"Repository include not allowed",
 				"repo_include cannot be used when scope is 'all_repos'",
 			)
 		}
-		if !pkgTypesIncludeValue.IsNull() && len((pkgTypesIncludeValue.(types.Set)).Elements()) > 0 {
+		if !pkgTypesIncludeValue.IsNull() && !pkgTypesIncludeValue.IsUnknown() && len((pkgTypesIncludeValue.(types.Set)).Elements()) > 0 {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("pkg_types_include"),
 				"Package types include not allowed",
@@ -237,7 +264,7 @@ func (v scopeRequirementsValidator) ValidateString(ctx context.Context, req vali
 		}
 
 		// repo_exclude is optional but if provided, cannot be empty
-		if !repoExcludeValue.IsNull() && len((repoExcludeValue.(types.Set)).Elements()) == 0 {
+		if !repoExcludeValue.IsNull() && !repoExcludeValue.IsUnknown() && len((repoExcludeValue.(types.Set)).Elements()) == 0 {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("repo_exclude"),
 				"Repository exclude cannot be empty",
@@ -277,6 +304,8 @@ type CurationPolicyResourceModel struct {
 	NotifyEmails        types.Set    `tfsdk:"notify_emails"`
 	WaiverRequestConfig types.String `tfsdk:"waiver_request_config"`
 	DecisionOwners      types.Set    `tfsdk:"decision_owners"`
+	BlockFromCache      types.Bool   `tfsdk:"block_from_cache"`
+	ShareWithFederation types.Bool   `tfsdk:"share_with_federation"`
 }
 
 type PackageWaiverModel struct {
@@ -319,6 +348,8 @@ type CurationPolicyAPIModel struct {
 	NotifyEmails        []string                `json:"notify_emails,omitempty"`
 	WaiverRequestConfig string                  `json:"waiver_request_config,omitempty"`
 	DecisionOwners      []string                `json:"decision_owners,omitempty"`
+	BlockFromCache      bool                    `json:"block_from_cache"`
+	ShareWithFederation bool                    `json:"share_with_federation"`
 }
 
 const (
@@ -455,6 +486,16 @@ func (r *CurationPolicyResource) Schema(ctx context.Context, req resource.Schema
 				Optional:    true,
 				ElementType: types.StringType,
 				Description: "List of JFrog Access groups used by waiver_request_config=manual",
+			},
+			"block_from_cache": schema.BoolAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "When true, the policy also blocks packages served from Artifactory's cache. Defaults to false.",
+			},
+			"share_with_federation": schema.BoolAttribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "When true, the policy is shared across federated instances. Only allowed when scope is 'all_repos' or 'pkg_types'. Defaults to false.",
 			},
 		},
 		MarkdownDescription: "Provides an Xray curation policy resource. This resource allows you to create, read, update, and delete curation policies in Xray. See [JFrog Curation REST APIs](https://jfrog.com/help/r/jfrog-rest-apis/create-curation-policy) [Official documentation](https://jfrog.com/help/r/jfrog-security-user-guide/products/curation/configure-curation/create-policies) for more details. \n\n" +
@@ -600,6 +641,16 @@ func (r *CurationPolicyResource) toAPIModel(ctx context.Context, plan CurationPo
 	}
 	// If no label_waivers, leave plan.LabelWaivers as null (don't force empty set)
 
+	// Convert block_from_cache
+	if !plan.BlockFromCache.IsNull() && !plan.BlockFromCache.IsUnknown() {
+		policy.BlockFromCache = plan.BlockFromCache.ValueBool()
+	}
+
+	// Convert share_with_federation
+	if !plan.ShareWithFederation.IsNull() && !plan.ShareWithFederation.IsUnknown() {
+		policy.ShareWithFederation = plan.ShareWithFederation.ValueBool()
+	}
+
 	return nil
 }
 
@@ -610,6 +661,8 @@ func (r *CurationPolicyResource) fromAPIModel(ctx context.Context, policy Curati
 	plan.Scope = types.StringValue(policy.Scope)
 	plan.PolicyAction = types.StringValue(policy.PolicyAction)
 	plan.WaiverRequestConfig = types.StringValue(policy.WaiverRequestConfig)
+	plan.BlockFromCache = types.BoolValue(policy.BlockFromCache)
+	plan.ShareWithFederation = types.BoolValue(policy.ShareWithFederation)
 
 	// Convert string arrays to sets
 	if len(policy.RepoExclude) > 0 {

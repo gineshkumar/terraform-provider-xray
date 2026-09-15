@@ -172,8 +172,9 @@ func (m *LicensePolicyResource) fromActionsAPIModel(ctx context.Context, actions
 	blockDownload, d := types.ObjectValue(
 		blockDownloadAttrTypes,
 		map[string]attr.Value{
-			"unscanned": types.BoolValue(actionsAPIModel.BlockDownload.Unscanned),
-			"active":    types.BoolValue(actionsAPIModel.BlockDownload.Active),
+			"unscanned":         types.BoolValue(actionsAPIModel.BlockDownload.Unscanned),
+			"active":            types.BoolValue(actionsAPIModel.BlockDownload.Active),
+			"grace_period_days": types.Int64Value(actionsAPIModel.BlockDownload.GracePeriodDays),
 		},
 	)
 	if d.HasError() {
@@ -199,6 +200,7 @@ func (m *LicensePolicyResource) fromActionsAPIModel(ctx context.Context, actions
 			"notify_deployer":                    types.BoolValue(actionsAPIModel.NotifyDeployer),
 			"notify_watch_recipients":            types.BoolValue(actionsAPIModel.NotifyWatchRecipients),
 			"create_ticket_enabled":              types.BoolValue(actionsAPIModel.CreateJiraTicketEnabled),
+			"fail_pull_request":                  types.BoolValue(actionsAPIModel.FailPullRequest != nil && actionsAPIModel.FailPullRequest.Active),
 			"build_failure_grace_period_in_days": types.Int64Value(actionsAPIModel.FailureGracePeriodDays),
 			"custom_severity":                    types.StringValue(actionsAPIModel.CustomSeverity),
 		},

@@ -13,6 +13,7 @@ import (
 	"github.com/jfrog/terraform-provider-shared/util"
 	"github.com/jfrog/terraform-provider-shared/util/sdk"
 	"github.com/jfrog/terraform-provider-xray/v3/pkg/acctest"
+	xray "github.com/jfrog/terraform-provider-xray/v3/pkg/xray/resource"
 )
 
 const criteriaTypeCvss = "cvss"
@@ -21,6 +22,7 @@ const criteriaTypeMaliciousPkg = "malicious_package"
 const criteriaTypeVulnerabilityIds = "vulnerability_ids"
 const criteriaTypeExposures = "exposures"
 const criteriaTypePackageName = "package_name"
+const criteriaTypeSAST = "sast"
 
 var testDataSecurity = map[string]string{
 	"resource_name":                     "",
@@ -36,10 +38,43 @@ var testDataSecurity = map[string]string{
 	"notify_watch_recipients":           "true",
 	"notify_deployer":                   "true",
 	"create_ticket_enabled":             "false",
+	"fail_pull_request":                 "true",
 	"grace_period_days":                 "5",
 	"block_unscanned":                   "true",
 	"block_active":                      "true",
 	"criteriaType":                      "cvss",
+}
+
+func TestNormalizeSeverity(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"All Severities", "All severities"},
+		{"All severities", "All severities"},
+		{"all severities", "All severities"},
+		{"ALL SEVERITIES", "All severities"},
+		{"Critical", "Critical"},
+		{"critical", "Critical"},
+		{"CRITICAL", "Critical"},
+		{"High", "High"},
+		{"high", "High"},
+		{"HIGH", "High"},
+		{"Medium", "Medium"},
+		{"medium", "Medium"},
+		{"Low", "Low"},
+		{"low", "Low"},
+		{"unknown_value", "unknown_value"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := xray.NormalizeSeverity(tt.input)
+			if result != tt.expected {
+				t.Errorf("NormalizeSeverity(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
 }
 
 func TestAccSecurityPolicy_UpgradeFromSDKv2(t *testing.T) {
@@ -49,6 +84,7 @@ func TestAccSecurityPolicy_UpgradeFromSDKv2(t *testing.T) {
 	testData["resource_name"] = resourceName
 	testData["policy_name"] = fmt.Sprintf("terraform-security-policy-4-%d", testutil.RandomInt())
 	testData["rule_name"] = fmt.Sprintf("test-security-rule-4-%d", testutil.RandomInt())
+	delete(testData, "fail_pull_request")
 
 	template := `
 	resource "xray_security_policy" "{{ .resource_name }}" {
@@ -361,6 +397,7 @@ func TestAccSecurityPolicy_withProjectKey(t *testing.T) {
 				notify_watch_recipients = {{ .notify_watch_recipients }}
 				notify_deployer = {{ .notify_deployer }}
 				create_ticket_enabled = {{ .create_ticket_enabled }}
+				fail_pull_request = {{ .fail_pull_request }}
 				build_failure_grace_period_in_days = {{ .grace_period_days }}
 				block_download {
 					unscanned = {{ .block_unscanned }}
@@ -397,10 +434,76 @@ func TestAccSecurityPolicy_withProjectKey(t *testing.T) {
 				Check:  verifyOpertionalRiskPolicy(fqrn, updatedTestData),
 			},
 			{
-				ResourceName:      fqrn,
-				ImportState:       true,
-				ImportStateId:     fmt.Sprintf("%s:%s", testData["policy_name"], projectKey),
-				ImportStateVerify: true,
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateId:           fmt.Sprintf("%s:%s", testData["policy_name"], projectKey),
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"rule.0.actions.0.fail_pull_request"},
+			},
+		},
+	})
+}
+
+// Non-zero block_download.grace_period_days round-trip (Xray Policy API)
+func TestAccSecurityPolicy_blockDownloadGracePeriodDays(t *testing.T) {
+	_, fqrn, resourceName := testutil.MkNames("policy-", "xray_security_policy")
+	testData := sdk.MergeMaps(testDataSecurity)
+
+	testData["resource_name"] = resourceName
+	testData["policy_name"] = fmt.Sprintf("terraform-security-policy-grace-%d", testutil.RandomInt())
+	testData["rule_name"] = fmt.Sprintf("test-security-rule-grace-%d", testutil.RandomInt())
+
+	resource.Test(t, resource.TestCase{
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckPolicy),
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicyCVSSBlockDownloadGraceSeven, testData),
+				Check: resource.ComposeTestCheckFunc(
+					verifySecurityPolicy(fqrn, testData, criteriaTypeCvss),
+					resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.block_download.0.grace_period_days", "7"),
+				),
+			},
+		},
+	})
+}
+
+// Practitioners who omitted block_download.grace_period_days in older configs can add it after upgrading the provider; this verifies create then in-place update.
+func TestAccSecurityPolicy_blockDownloadGracePeriodDays_omitThenSet(t *testing.T) {
+	_, fqrn, resourceName := testutil.MkNames("policy-", "xray_security_policy")
+	testData := sdk.MergeMaps(testDataSecurity)
+
+	testData["resource_name"] = resourceName
+	testData["policy_name"] = fmt.Sprintf("terraform-security-policy-grace-omit-%d", testutil.RandomInt())
+	testData["rule_name"] = fmt.Sprintf("test-security-rule-grace-omit-%d", testutil.RandomInt())
+
+	step2Data := sdk.MergeMaps(testData)
+
+	resource.Test(t, resource.TestCase{
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckPolicy),
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicyCVSSBlockDownloadGraceOmitted, testData),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "name", testData["policy_name"]),
+					resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.block_download.0.grace_period_days", "0"),
+				),
+			},
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicyCVSSBlockDownloadGraceSeven, step2Data),
+				Check: resource.ComposeTestCheckFunc(
+					verifySecurityPolicy(fqrn, step2Data, criteriaTypeCvss),
+					resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.block_download.0.grace_period_days", "7"),
+				),
+			},
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicyCVSSBlockDownloadGraceSeven, step2Data),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
 			},
 		},
 	})
@@ -427,7 +530,7 @@ func TestAccSecurityPolicy_createBlockDownloadTrueCVSS(t *testing.T) {
 				ResourceName:            fqrn,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"author", "created", "modified"},
+				ImportStateVerifyIgnore: []string{"author", "created", "modified", "rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -453,9 +556,10 @@ func TestAccSecurityPolicy_createBlockDownloadFalseCVSS(t *testing.T) {
 				Check:  verifySecurityPolicy(fqrn, testData, criteriaTypeCvss),
 			},
 			{
-				ResourceName:      fqrn,
-				ImportState:       true,
-				ImportStateVerify: true,
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -479,9 +583,10 @@ func TestAccSecurityPolicy_createBlockDownloadTrueMinSeverity(t *testing.T) {
 				Check:  verifySecurityPolicy(fqrn, testData, criteriaTypeSeverity),
 			},
 			{
-				ResourceName:      fqrn,
-				ImportState:       true,
-				ImportStateVerify: true,
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -510,7 +615,7 @@ func TestAccSecurityPolicy_createFixVersionDepMinSeverity(t *testing.T) {
 				ResourceName:            fqrn,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"project_key"},
+				ImportStateVerifyIgnore: []string{"project_key", "rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -539,7 +644,7 @@ func TestAccSecurityPolicy_createMaliciousPackage(t *testing.T) {
 				ResourceName:            fqrn,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"project_key"},
+				ImportStateVerifyIgnore: []string{"project_key", "rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -675,9 +780,10 @@ func TestAccSecurityPolicy_createBlockDownloadFalseMinSeverity(t *testing.T) {
 				Check:  verifySecurityPolicy(fqrn, testData, criteriaTypeSeverity),
 			},
 			{
-				ResourceName:      fqrn,
-				ImportState:       true,
-				ImportStateVerify: true,
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -706,7 +812,7 @@ func TestAccSecurityPolicy_createCVSSFloat(t *testing.T) {
 				ResourceName:            fqrn,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"author", "created", "modified"},
+				ImportStateVerifyIgnore: []string{"author", "created", "modified", "rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -782,9 +888,10 @@ func TestAccSecurityPolicy_vulnerabilityIds(t *testing.T) {
 				Check:  verifySecurityPolicy(fqrn, testData, criteriaTypeVulnerabilityIds),
 			},
 			{
-				ResourceName:      fqrn,
-				ImportState:       true,
-				ImportStateVerify: true,
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -886,7 +993,174 @@ func TestAccSecurityPolicy_exposures(t *testing.T) {
 				ResourceName:            fqrn,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"author", "created", "modified"},
+				ImportStateVerifyIgnore: []string{"author", "created", "modified", "rule.0.actions.0.fail_pull_request"},
+			},
+		},
+	})
+}
+
+func TestAccSecurityPolicy_exposuresAllSeveritiesNoDrift(t *testing.T) {
+	_, fqrn, resourceName := testutil.MkNames("policy-", "xray_security_policy")
+	testData := sdk.MergeMaps(testDataSecurity)
+
+	testData["resource_name"] = resourceName
+	testData["policy_name"] = fmt.Sprintf("terraform-security-policy-allsev-%d", testutil.RandomInt())
+	testData["rule_name"] = fmt.Sprintf("test-security-rule-allsev-%d", testutil.RandomInt())
+	testData["exposures_min_severity"] = "All severities"
+	testData["exposures_secrets"] = "true"
+	testData["exposures_applications"] = "true"
+	testData["exposures_services"] = "true"
+	testData["exposures_iac"] = "true"
+
+	resource.Test(t, resource.TestCase{
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckPolicy),
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicyExposures, testData),
+				Check:  verifySecurityPolicy(fqrn, testData, criteriaTypeExposures),
+			},
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicyExposures, testData),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+			{
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"author", "created", "modified", "rule.0.actions.0.fail_pull_request"},
+			},
+		},
+	})
+}
+
+func TestAccSecurityPolicy_sast(t *testing.T) {
+	_, fqrn, resourceName := testutil.MkNames("policy-", "xray_security_policy")
+	testData := sdk.MergeMaps(testDataSecurity)
+
+	testData["resource_name"] = resourceName
+	testData["policy_name"] = fmt.Sprintf("terraform-security-policy-sast-%d", testutil.RandomInt())
+	testData["rule_name"] = fmt.Sprintf("test-security-rule-sast-%d", testutil.RandomInt())
+	testData["sast_min_severity"] = "Low"
+
+	resource.Test(t, resource.TestCase{
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckPolicy),
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicySAST, testData),
+				Check:  verifySecurityPolicy(fqrn, testData, criteriaTypeSAST),
+			},
+			{
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"author", "created", "modified", "rule.0.actions.0.fail_pull_request"},
+			},
+		},
+	})
+}
+
+func TestAccSecurityPolicy_sastAllSeverities(t *testing.T) {
+	_, fqrn, resourceName := testutil.MkNames("policy-", "xray_security_policy")
+	testData := sdk.MergeMaps(testDataSecurity)
+
+	testData["resource_name"] = resourceName
+	testData["policy_name"] = fmt.Sprintf("terraform-security-policy-sast-all-%d", testutil.RandomInt())
+	testData["rule_name"] = fmt.Sprintf("test-security-rule-sast-all-%d", testutil.RandomInt())
+	// "All severities" is a provider-level convenience value. Xray rejects it
+	// verbatim ("All severities is not a valid severity in sast condition") and
+	// also rejects the field being absent ("min_severity is missing in sast
+	// conditions"), so it is sent as the "Unknown" sentinel and read back as
+	// "All severities". The Xray UI label "All Severities" is also accepted;
+	// SeverityStringType treats the two spellings as semantically equal.
+	testData["sast_min_severity"] = "All Severities"
+
+	// Same policy with a concrete severity, used to exercise the update path in
+	// both directions. Create and update build the payload through the same
+	// mapping, but only create was ever covered.
+	updatedTestData := sdk.MergeMaps(testData)
+	updatedTestData["sast_min_severity"] = "High"
+
+	// Canonical spelling used for a no-drift check against UI-cased state/config.
+	canonicalTestData := sdk.MergeMaps(testData)
+	canonicalTestData["sast_min_severity"] = "All severities"
+
+	resource.Test(t, resource.TestCase{
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckPolicy),
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicySAST, testData),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "name", testData["policy_name"]),
+					resource.TestCheckResourceAttr(fqrn, "rule.0.criteria.0.sast.0.min_severity", "All Severities"),
+				),
+			},
+			{
+				// UI spelling in config must not drift after the Unknown round-trip.
+				Config: util.ExecuteTemplate(fqrn, securityPolicySAST, testData),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicySAST, updatedTestData),
+				Check:  verifySecurityPolicy(fqrn, updatedTestData, criteriaTypeSAST),
+			},
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicySAST, canonicalTestData),
+				Check:  verifySecurityPolicy(fqrn, canonicalTestData, criteriaTypeSAST),
+			},
+			{
+				// Canonical spelling also round-trips with no drift.
+				Config: util.ExecuteTemplate(fqrn, securityPolicySAST, canonicalTestData),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+			{
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"author", "created", "modified", "rule.0.actions.0.fail_pull_request"},
+			},
+		},
+	})
+}
+
+func TestAccSecurityPolicy_sastNoDrift(t *testing.T) {
+	_, fqrn, resourceName := testutil.MkNames("policy-", "xray_security_policy")
+	testData := sdk.MergeMaps(testDataSecurity)
+
+	testData["resource_name"] = resourceName
+	testData["policy_name"] = fmt.Sprintf("terraform-security-policy-sast-nodrift-%d", testutil.RandomInt())
+	testData["rule_name"] = fmt.Sprintf("test-security-rule-sast-nodrift-%d", testutil.RandomInt())
+	testData["sast_min_severity"] = "High"
+
+	resource.Test(t, resource.TestCase{
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckPolicy),
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicySAST, testData),
+				Check:  verifySecurityPolicy(fqrn, testData, criteriaTypeSAST),
+			},
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicySAST, testData),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
 			},
 		},
 	})
@@ -919,7 +1193,76 @@ func TestAccSecurityPolicy_Packages(t *testing.T) {
 				ResourceName:            fqrn,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"author", "created", "modified"},
+				ImportStateVerifyIgnore: []string{"author", "created", "modified", "rule.0.actions.0.fail_pull_request"},
+			},
+		},
+	})
+}
+
+// TestAccSecurityPolicy_PackageVersionsHyphenated validates rule.criteria.package_versions regexp (must match resource_xray_security_policy.go)
+// and end-to-end create/import for hyphenated and related Xray API forms.
+func TestAccSecurityPolicy_PackageVersionsHyphenated(t *testing.T) {
+	pattern := `(^(\(|\[)((\d+\.)?(\d+\.)?(\*|[\dA-Za-z][\dA-Za-z.\-]*)|(\s*))\,((\d+\.)?(\d+\.)?(\*|[\dA-Za-z][\dA-Za-z.\-]*)|(\s*))(\)|\])$|^\[(\d+\.)?(\d+\.)?(\*|[\dA-Za-z][\dA-Za-z.\-]*)\]$|^[\dA-Za-z][\dA-Za-z.\-]*$)`
+	re := regexp.MustCompile(pattern)
+
+	valid := []string{
+		"(,)",
+		"( , )",
+		"2026.3.31-2",
+		"[2026.3.31-2]",
+		"[1.2.3]",
+		"[1.0.0.0]",
+		"3.10.0",
+		"(1,latest)",
+		"(1.2.3,3.10.2)",
+		"[3.11,)",
+		"[4.0.0]",
+		"(3.2.1,)",
+		"[3.2.1,]",
+	}
+	for _, s := range valid {
+		if !re.MatchString(s) {
+			t.Fatalf("expected package_versions pattern to accept %q", s)
+		}
+	}
+	invalid := []string{"", "[3,,4]", "(1,2,3)", "((1,2))", "[foo"}
+	for _, s := range invalid {
+		if re.MatchString(s) {
+			t.Fatalf("expected package_versions pattern to reject %q", s)
+		}
+	}
+
+	_, fqrn, resourceName := testutil.MkNames("policy-", "xray_security_policy")
+	testData := sdk.MergeMaps(testDataSecurity)
+
+	testData["resource_name"] = resourceName
+	testData["policy_name"] = fmt.Sprintf("terraform-security-policy-hyphen-pkg-%d", testutil.RandomInt())
+	testData["rule_name"] = fmt.Sprintf("test-security-rule-hyphen-%d", testutil.RandomInt())
+	testData["block_unscanned"] = "false"
+	testData["block_active"] = "false"
+	testData["package_name"] = "@shadanai/openclaw"
+	testData["package_type"] = "Npm"
+	testData["package_version_1"] = "2026.3.31-2"
+	testData["package_version_2"] = "[2026.3.31-2]"
+	testData["package_version_3"] = "(,)"
+
+	resource.Test(t, resource.TestCase{
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckPolicy),
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: util.ExecuteTemplate(fqrn, securityPolicyPackages, testData),
+				Check: resource.ComposeTestCheckFunc(
+					verifySecurityPolicy(fqrn, testData, criteriaTypePackageName),
+					resource.TestCheckTypeSetElemAttr(fqrn, "rule.0.criteria.0.package_versions.*", testData["package_version_2"]),
+					resource.TestCheckTypeSetElemAttr(fqrn, "rule.0.criteria.0.package_versions.*", testData["package_version_3"]),
+				),
+			},
+			{
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"author", "created", "modified", "rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -929,14 +1272,14 @@ func TestAccSecurityPolicy_PackagesIncorrectVersionRangeFails(t *testing.T) {
 	_, fqrn, resourceName := testutil.MkNames("policy-", "xray_security_policy")
 	testData := sdk.MergeMaps(testDataSecurity)
 
-	for _, invalidVersionRange := range []string{"3.10.0", "[3,,4]", "(1,latest)", "[1.0.0.0]"} {
+	for _, invalidVersionRange := range []string{"", "[3,,4]", "(1,2,3)", "((1,2))", "[foo"} {
 		testData["resource_name"] = resourceName
 		testData["policy_name"] = fmt.Sprintf("terraform-security-policy-10-%d", testutil.RandomInt())
 		testData["rule_name"] = fmt.Sprintf("test-security-rule-10-%d", testutil.RandomInt())
 		testData["block_unscanned"] = "false"
 		testData["block_active"] = "false"
 		testData["package_name"] = "nuget://RazorEngine"
-		testData["package_type"] = "nuget"
+		testData["package_type"] = "NuGet"
 		testData["package_version_1"] = invalidVersionRange
 		testData["package_version_2"] = "(3.2.1,)"
 		testData["package_version_3"] = "[3.2.1,]"
@@ -1031,7 +1374,7 @@ resource "xray_security_policy" "test" {
 }
 
 func verifySecurityPolicy(fqrn string, testData map[string]string, criteriaType string) resource.TestCheckFunc {
-	var commonCheckList = resource.ComposeTestCheckFunc(
+	checks := []resource.TestCheckFunc{
 		resource.TestCheckResourceAttr(fqrn, "name", testData["policy_name"]),
 		resource.TestCheckResourceAttr(fqrn, "description", testData["policy_description"]),
 		resource.TestCheckResourceAttr(fqrn, "rule.0.name", testData["rule_name"]),
@@ -1044,7 +1387,13 @@ func verifySecurityPolicy(fqrn string, testData map[string]string, criteriaType 
 		resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.build_failure_grace_period_in_days", testData["grace_period_days"]),
 		resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.block_download.0.active", testData["block_active"]),
 		resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.block_download.0.unscanned", testData["block_unscanned"]),
-	)
+	}
+
+	if v, ok := testData["fail_pull_request"]; ok && v != "" {
+		checks = append(checks, resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.fail_pull_request", v))
+	}
+
+	var commonCheckList = resource.ComposeTestCheckFunc(checks...)
 
 	if criteriaType == criteriaTypeCvss {
 		return resource.ComposeTestCheckFunc(
@@ -1089,6 +1438,12 @@ func verifySecurityPolicy(fqrn string, testData map[string]string, criteriaType 
 			resource.TestCheckTypeSetElemAttr(fqrn, "rule.0.criteria.0.package_versions.*", testData["package_version_1"]),
 		)
 	}
+	if criteriaType == criteriaTypeSAST {
+		return resource.ComposeTestCheckFunc(
+			commonCheckList,
+			resource.TestCheckResourceAttr(fqrn, "rule.0.criteria.0.sast.0.min_severity", testData["sast_min_severity"]),
+		)
+	}
 	return nil
 }
 
@@ -1122,6 +1477,7 @@ const securityPolicyVulnIds = `resource "xray_security_policy" "{{ .resource_nam
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1148,6 +1504,7 @@ const securityPolicyVulnIdsLimit = `resource "xray_security_policy" "{{ .resourc
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1181,6 +1538,7 @@ const securityPolicyVulnIdsConflict = `resource "xray_security_policy" "{{ .reso
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1210,6 +1568,70 @@ const securityPolicyCVSS = `resource "xray_security_policy" "{{ .resource_name }
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
+			build_failure_grace_period_in_days = {{ .grace_period_days }}
+			block_download {
+				unscanned = {{ .block_unscanned }}
+				active = {{ .block_active }}
+			}
+		}
+	}
+}`
+
+// Used only by TestAccSecurityPolicy_blockDownloadGracePeriodDays* (non-zero grace round-trip / omit-then-set).
+const securityPolicyCVSSBlockDownloadGraceSeven = `resource "xray_security_policy" "{{ .resource_name }}" {
+	name = "{{ .policy_name }}"
+	description = "{{ .policy_description }}"
+	type = "security"
+	rule {
+		name = "{{ .rule_name }}"
+		priority = 1
+		criteria {
+			cvss_range {
+				from = {{ .cvss_from }}
+				to = {{ .cvss_to }}
+			}
+		}
+		actions {
+			block_release_bundle_distribution = {{ .block_release_bundle_distribution }}
+			block_release_bundle_promotion = {{ .block_release_bundle_promotion }}
+			fail_build = {{ .fail_build }}
+			notify_watch_recipients = {{ .notify_watch_recipients }}
+			notify_deployer = {{ .notify_deployer }}
+			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
+			build_failure_grace_period_in_days = {{ .grace_period_days }}
+			block_download {
+				unscanned = {{ .block_unscanned }}
+				active = {{ .block_active }}
+				grace_period_days = 7
+			}
+		}
+	}
+}`
+
+// block_download without grace_period_days — simulates configs written before the attribute existed.
+const securityPolicyCVSSBlockDownloadGraceOmitted = `resource "xray_security_policy" "{{ .resource_name }}" {
+	name = "{{ .policy_name }}"
+	description = "{{ .policy_description }}"
+	type = "security"
+	rule {
+		name = "{{ .rule_name }}"
+		priority = 1
+		criteria {
+			cvss_range {
+				from = {{ .cvss_from }}
+				to = {{ .cvss_to }}
+			}
+		}
+		actions {
+			block_release_bundle_distribution = {{ .block_release_bundle_distribution }}
+			block_release_bundle_promotion = {{ .block_release_bundle_promotion }}
+			fail_build = {{ .fail_build }}
+			notify_watch_recipients = {{ .notify_watch_recipients }}
+			notify_deployer = {{ .notify_deployer }}
+			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1237,6 +1659,7 @@ const securityPolicyTwoRules = `resource "xray_security_policy" "{{ .resource_na
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1261,6 +1684,7 @@ const securityPolicyTwoRules = `resource "xray_security_policy" "{{ .resource_na
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1291,6 +1715,7 @@ const securityPolicyCVSSMinSeverity = `resource "xray_security_policy" "{{ .reso
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1321,6 +1746,7 @@ const securityPolicyCVSSVulnerabilityIDs = `resource "xray_security_policy" "{{ 
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1351,6 +1777,7 @@ const securityPolicyCVSSMaliciousPkg = `resource "xray_security_policy" "{{ .res
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1377,6 +1804,7 @@ const securityPolicyMinSeverity = `resource "xray_security_policy" "{{ .resource
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1409,6 +1837,7 @@ const securityPolicyExposures = `resource "xray_security_policy" "{{ .resource_n
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1436,6 +1865,7 @@ const securityPolicyFixVersionDep = `resource "xray_security_policy" "{{ .resour
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1463,6 +1893,7 @@ const securityPolicyMaliciousPkgFixVersionDep = `resource "xray_security_policy"
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1490,6 +1921,7 @@ const securityPolicyMaliciousPkgMinSeverityDep = `resource "xray_security_policy
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1519,6 +1951,7 @@ const securityPolicyPackagesFixVersionDep = `resource "xray_security_policy" "{{
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}
@@ -1547,6 +1980,36 @@ const securityPolicyPackages = `resource "xray_security_policy" "{{ .resource_na
 			notify_watch_recipients = {{ .notify_watch_recipients }}
 			notify_deployer = {{ .notify_deployer }}
 			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
+			build_failure_grace_period_in_days = {{ .grace_period_days }}
+			block_download {
+				unscanned = {{ .block_unscanned }}
+				active = {{ .block_active }}
+			}
+		}
+	}
+}`
+
+const securityPolicySAST = `resource "xray_security_policy" "{{ .resource_name }}" {
+	name = "{{ .policy_name }}"
+	description = "{{ .policy_description }}"
+	type = "security"
+	rule {
+		name = "{{ .rule_name }}"
+		priority = 1
+		criteria {
+			sast {
+				min_severity = "{{ .sast_min_severity }}"
+			}
+		}
+		actions {
+			block_release_bundle_distribution = {{ .block_release_bundle_distribution }}
+			block_release_bundle_promotion = {{ .block_release_bundle_promotion }}
+			fail_build = {{ .fail_build }}
+			notify_watch_recipients = {{ .notify_watch_recipients }}
+			notify_deployer = {{ .notify_deployer }}
+			create_ticket_enabled = {{ .create_ticket_enabled }}
+			fail_pull_request = {{ .fail_pull_request }}
 			build_failure_grace_period_in_days = {{ .grace_period_days }}
 			block_download {
 				unscanned = {{ .block_unscanned }}

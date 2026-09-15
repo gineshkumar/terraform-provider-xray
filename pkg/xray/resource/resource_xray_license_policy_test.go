@@ -30,6 +30,7 @@ var testDataLicense = map[string]string{
 	"notify_watch_recipients":           "true",
 	"notify_deployer":                   "true",
 	"create_ticket_enabled":             "false",
+	"fail_pull_request":                 "true",
 	"custom_severity":                   "High",
 	"grace_period_days":                 "5",
 	"block_unscanned":                   "true",
@@ -46,6 +47,7 @@ func TestAccLicensePolicy_UpgradeFromSDKv2(t *testing.T) {
 	testData["rule_name"] = fmt.Sprintf("test-license-rule-3-%d", testutil.RandomInt())
 	testData["multi_license_permissive"] = "true"
 	testData["allowedOrBanned"] = "allowed_licenses"
+	delete(testData, "fail_pull_request")
 
 	template := `
 	resource "xray_license_policy" "{{ .resource_name }}" {
@@ -208,6 +210,7 @@ func TestAccLicensePolicy_withProjectKey(t *testing.T) {
 	          notify_watch_recipients = {{ .notify_watch_recipients }}
 	          notify_deployer = {{ .notify_deployer }}
 	          create_ticket_enabled = {{ .create_ticket_enabled }}
+	          fail_pull_request = {{ .fail_pull_request }}
 	          custom_severity = "{{ .custom_severity }}"
 	          build_failure_grace_period_in_days = {{ .grace_period_days }}
 			}
@@ -241,10 +244,11 @@ func TestAccLicensePolicy_withProjectKey(t *testing.T) {
 				Check:  verifyLicensePolicy(fqrn, updatedTestData, updatedTestData["allowedOrBanned"]),
 			},
 			{
-				ResourceName:      fqrn,
-				ImportState:       true,
-				ImportStateId:     fmt.Sprintf("%s:%s", testData["policy_name"], projectKey),
-				ImportStateVerify: true,
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateId:           fmt.Sprintf("%s:%s", testData["policy_name"], projectKey),
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -269,9 +273,10 @@ func TestAccLicensePolicy_createAllowedLic(t *testing.T) {
 				Check:  verifyLicensePolicy(fqrn, testData, testData["allowedOrBanned"]),
 			},
 			{
-				ResourceName:      fqrn,
-				ImportState:       true,
-				ImportStateVerify: true,
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -297,9 +302,10 @@ func TestAccLicensePolicy_createAllowedLicCustom(t *testing.T) {
 				Check:  verifyLicensePolicy(fqrn, testData, testData["allowedOrBanned"]),
 			},
 			{
-				ResourceName:      fqrn,
-				ImportState:       true,
-				ImportStateVerify: true,
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -326,7 +332,7 @@ func TestAccLicensePolicy_createBannedLic(t *testing.T) {
 				ResourceName:            fqrn,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"project_key"},
+				ImportStateVerifyIgnore: []string{"project_key", "rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -354,7 +360,7 @@ func TestAccLicensePolicy_createBannedLicCustom(t *testing.T) {
 				ResourceName:            fqrn,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"project_key"},
+				ImportStateVerifyIgnore: []string{"project_key", "rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -381,7 +387,7 @@ func TestAccLicensePolicy_createMultiLicensePermissiveFalse(t *testing.T) {
 				ResourceName:            fqrn,
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"project_key"},
+				ImportStateVerifyIgnore: []string{"project_key", "rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -407,9 +413,10 @@ func TestAccLicensePolicy_createBlockFalse(t *testing.T) {
 				Check:  verifyLicensePolicy(fqrn, testData, testData["allowedOrBanned"]),
 			},
 			{
-				ResourceName:      fqrn,
-				ImportState:       true,
-				ImportStateVerify: true,
+				ResourceName:            fqrn,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"rule.0.actions.0.fail_pull_request"},
 			},
 		},
 	})
@@ -442,7 +449,7 @@ resource "xray_security_policy" "%s" {
 }
 
 func verifyLicensePolicy(fqrn string, testData map[string]string, allowedOrBanned string) resource.TestCheckFunc {
-	return resource.ComposeTestCheckFunc(
+	checks := []resource.TestCheckFunc{
 		resource.TestCheckResourceAttr(fqrn, "name", testData["policy_name"]),
 		resource.TestCheckResourceAttr(fqrn, "description", testData["policy_description"]),
 		resource.TestCheckResourceAttr(fqrn, "rule.0.name", testData["rule_name"]),
@@ -462,7 +469,13 @@ func verifyLicensePolicy(fqrn string, testData map[string]string, allowedOrBanne
 		resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.block_download.0.active", testData["block_active"]),
 		resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.block_download.0.unscanned", testData["block_unscanned"]),
 		resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.custom_severity", testData["custom_severity"]),
-	)
+	}
+
+	if v, ok := testData["fail_pull_request"]; ok && v != "" {
+		checks = append(checks, resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.fail_pull_request", v))
+	}
+
+	return resource.ComposeTestCheckFunc(checks...)
 }
 
 const licensePolicyTemplate = `resource "xray_license_policy" "{{ .resource_name }}" {
@@ -489,11 +502,117 @@ const licensePolicyTemplate = `resource "xray_license_policy" "{{ .resource_name
           notify_watch_recipients = {{ .notify_watch_recipients }}
           notify_deployer = {{ .notify_deployer }}
           create_ticket_enabled = {{ .create_ticket_enabled }}
+          fail_pull_request = {{ .fail_pull_request }}
           custom_severity = "{{ .custom_severity }}"
           build_failure_grace_period_in_days = {{ .grace_period_days }}
 		}
 	}
 }`
+
+// Used only by TestAccLicensePolicy_blockDownloadGracePeriodDays_omitThenSet (step 2: non-zero grace).
+const licensePolicyTemplateBlockDownloadGraceSeven = `resource "xray_license_policy" "{{ .resource_name }}" {
+	name = "{{ .policy_name }}"
+	description = "{{ .policy_description }}"
+	type = "license"
+	rule {
+		name = "{{ .rule_name }}"
+		priority = 1
+		criteria {
+          {{ .allowedOrBanned }} = ["{{ .license_0 }}","{{ .license_1 }}"]
+          allow_unknown = {{ .allow_unknown }}
+          multi_license_permissive = {{ .multi_license_permissive }}
+		}
+		actions {
+          mails = ["{{ .mails_0 }}", "{{ .mails_1 }}"]
+          block_download {
+				unscanned = {{ .block_unscanned }}
+				active = {{ .block_active }}
+				grace_period_days = 7
+          }
+          block_release_bundle_distribution = {{ .block_release_bundle_distribution }}
+          block_release_bundle_promotion = {{ .block_release_bundle_promotion }}
+          fail_build = {{ .fail_build }}
+          notify_watch_recipients = {{ .notify_watch_recipients }}
+          notify_deployer = {{ .notify_deployer }}
+          create_ticket_enabled = {{ .create_ticket_enabled }}
+          fail_pull_request = {{ .fail_pull_request }}
+          custom_severity = "{{ .custom_severity }}"
+          build_failure_grace_period_in_days = {{ .grace_period_days }}
+		}
+	}
+}`
+
+// block_download without grace_period_days — simulates configs written before the attribute existed.
+const licensePolicyTemplateBlockDownloadGraceOmitted = `resource "xray_license_policy" "{{ .resource_name }}" {
+	name = "{{ .policy_name }}"
+	description = "{{ .policy_description }}"
+	type = "license"
+	rule {
+		name = "{{ .rule_name }}"
+		priority = 1
+		criteria {
+          {{ .allowedOrBanned }} = ["{{ .license_0 }}","{{ .license_1 }}"]
+          allow_unknown = {{ .allow_unknown }}
+          multi_license_permissive = {{ .multi_license_permissive }}
+		}
+		actions {
+          mails = ["{{ .mails_0 }}", "{{ .mails_1 }}"]
+          block_download {
+				unscanned = {{ .block_unscanned }}
+				active = {{ .block_active }}
+          }
+          block_release_bundle_distribution = {{ .block_release_bundle_distribution }}
+          block_release_bundle_promotion = {{ .block_release_bundle_promotion }}
+          fail_build = {{ .fail_build }}
+          notify_watch_recipients = {{ .notify_watch_recipients }}
+          notify_deployer = {{ .notify_deployer }}
+          create_ticket_enabled = {{ .create_ticket_enabled }}
+          fail_pull_request = {{ .fail_pull_request }}
+          custom_severity = "{{ .custom_severity }}"
+          build_failure_grace_period_in_days = {{ .grace_period_days }}
+		}
+	}
+}`
+
+func TestAccLicensePolicy_blockDownloadGracePeriodDays_omitThenSet(t *testing.T) {
+	_, fqrn, resourceName := testutil.MkNames("policy-", "xray_license_policy")
+	testData := sdk.MergeMaps(testDataLicense)
+
+	testData["resource_name"] = resourceName
+	testData["policy_name"] = fmt.Sprintf("terraform-license-policy-grace-omit-%d", testutil.RandomInt())
+	testData["rule_name"] = fmt.Sprintf("test-license-rule-grace-omit-%d", testutil.RandomInt())
+
+	step2Data := sdk.MergeMaps(testData)
+
+	resource.Test(t, resource.TestCase{
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckPolicy),
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: util.ExecuteTemplate(fqrn, licensePolicyTemplateBlockDownloadGraceOmitted, testData),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "name", testData["policy_name"]),
+					resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.block_download.0.grace_period_days", "0"),
+				),
+			},
+			{
+				Config: util.ExecuteTemplate(fqrn, licensePolicyTemplateBlockDownloadGraceSeven, step2Data),
+				Check: resource.ComposeTestCheckFunc(
+					verifyLicensePolicy(fqrn, step2Data, step2Data["allowedOrBanned"]),
+					resource.TestCheckResourceAttr(fqrn, "rule.0.actions.0.block_download.0.grace_period_days", "7"),
+				),
+			},
+			{
+				Config: util.ExecuteTemplate(fqrn, licensePolicyTemplateBlockDownloadGraceSeven, step2Data),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+		},
+	})
+}
 
 func TestAccLicensePolicy_MigrateSetToList(t *testing.T) {
 	_, fqrn, resourceName := testutil.MkNames("policy-", "xray_license_policy")
@@ -504,6 +623,7 @@ func TestAccLicensePolicy_MigrateSetToList(t *testing.T) {
 	testData["rule_name"] = fmt.Sprintf("test-license-rule-3-%d", testutil.RandomInt())
 	testData["multi_license_permissive"] = "true"
 	testData["allowedOrBanned"] = "allowed_licenses"
+	delete(testData, "fail_pull_request")
 
 	template := `
 	resource "xray_license_policy" "{{ .resource_name }}" {

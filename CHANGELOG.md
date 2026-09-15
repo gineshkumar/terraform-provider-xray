@@ -1,10 +1,129 @@
-## 3.1.6 (Feb 04,2026). Tested on JFrog Platform 11.4.2 (Artifactory 7.133.6, Xray 3.137.16, Catalog 1.31.3) with Terraform 1.14.4 and OpenTofu 1.11.4
+## 3.1.14 (September 3, 2026). Tested on JFrog Platform 11.6.3 (Artifactory 7.161.20, Xray 3.150.34, Catalog 1.46.1) with Terraform 1.16.1 and OpenTofu 1.12.6
+
+FEATURES:
+
+* data/xray_curation_condition: Add a new data source which looks up a built-in or custom Curation condition by its exact name (case-sensitive) and exposes its numeric `id`, so `xray_curation_policy.condition_id` no longer has to be hard-coded to a raw numeric ID. Issue: JTFPR-341 PR: [#452](https://github.com/jfrog/terraform-provider-xray/pull/452)
+
+BUG FIXES:
+
+* resource/xray_security_policy, resource/xray_license_policy: Fix blank `Unable to Create/Update Resource` error on `terraform apply` when a proxy or load balancer in front of Xray (e.g. a Google load balancer) rejects the read-back `GET` request. The provider was reusing the same HTTP request object for the create/update `POST`/`PUT` and the follow-up `GET`, so the `GET` was sent with the write's leftover JSON body and `Content-Type` header, which such proxies treat as malformed and reject with a non-JSON `400` response. The read-back now uses a fresh request without a body. Additionally, when the API (or an intermediate proxy) returns a non-JSON error response, the provider now surfaces the HTTP status code and raw response body instead of a blank error message. Issue: JTFPR-276
+* resource/xray_binary_manager_release_bundles_v2: Fix `Error: Duplicate Set Element` during plan when Release Bundles V2 with the same name exist in different projects. Release Bundle V2 names are unique per project, but the API returns them as `[<project-key>-release-bundles-v2]/<name>` and the provider stripped that prefix, collapsing bundles from different projects into duplicate set elements. Names are now scoped to the resource's `project_key` before being stored in `indexed_release_bundle_v2` and `non_indexed_release_bundle_v2`.
+
+NOTES:
+
+* resource/xray_binary_manager_release_bundles_v2: After upgrade, `indexed_release_bundle_v2` and `non_indexed_release_bundle_v2` only include Release Bundles V2 that belong to the resource's `project_key` (or the default scope when `project_key` is unset). The same bundle name in different projects is valid and requires a separate resource per `project_key`. If a default-scope resource previously listed project-scoped names, move those names to project-scoped resources and expect set membership diffs on the next `terraform plan`.
+
+## 3.1.13 (Aug 21, 2026). Tested on JFrog Platform 11.6.1 (Artifactory 7.161.16, Xray 3.150.24, Catalog 1.44.0) with Terraform 1.15.8 and OpenTofu 1.12.5
+
+FEATURES:
+
+* resource/xray_curation_policy: Add `share_with_federation` attribute so Curation Federation policies can be declared and managed with Terraform. The flag is read from and written to the API, and is only allowed when `scope` is `all_repos` or `pkg_types`. Issue: [#437](https://github.com/jfrog/terraform-provider-xray/issues/437) PR: [#444](https://github.com/jfrog/terraform-provider-xray/pull/444)
+
+IMPROVEMENTS:
+
+* provider: Upgrade `github.com/jfrog/terraform-provider-shared` to v1.30.8.
+
+BUG FIXES:
+
+* resource/xray_security_policy: Fix `Found Invalid Policy: All severities is not a valid severity in sast condition` when creating or updating a policy with `sast.min_severity = "All severities"`. Xray rejects that literal value in a `sast` condition and also rejects the field being omitted, so it is now sent as the API's `Unknown` sentinel and mapped back to `All severities` on read to avoid drift. Also accept the UI label `All Severities` (and other case variants) via case-insensitive validation and preserve the configured casing in state. Issue: [#445](https://github.com/jfrog/terraform-provider-xray/issues/445) PR: [#446](https://github.com/jfrog/terraform-provider-xray/pull/446)
+
+SECURITY:
+
+* provider: Address CVE-2026-39821 by upgrading Go to 1.25.13 and golang.org/x/net to v0.58.0. CVSS 9.6 Critical.
+* provider: Address CVE-2026-56865 by upgrading Go to 1.25.13. CVSS 8.4 High.
+* provider: Address CVE-2026-56864 by upgrading Go to 1.25.13. CVSS 7.5 High.
+* provider: Address CVE-2026-33818 by upgrading Go to 1.25.13. CVSS 7.5 High.
+* provider: Address CVE-2026-46600 by upgrading Go to 1.25.13. CVSS 7.5 High.
+* provider: Address CVE-2026-56862 by upgrading Go to 1.25.13. CVSS 7.5 High.
+* provider: Address CVE-2026-56859 by upgrading Go to 1.25.13. CVSS 7.5 High.
+* provider: Address CVE-2026-56860 by upgrading Go to 1.25.13. CVSS 7.5 High.
+* provider: Address CVE-2026-56858 by upgrading Go to 1.25.13. CVSS 6.1 Medium.
+* provider: Address CVE-2026-56853 by upgrading Go to 1.25.13. CVSS 5.3 Medium.
+* provider: Address CVE-2026-25680 by upgrading golang.org/x/net to v0.58.0. CVSS 6.5 Medium.
+* provider: Address CVE-2026-42506 by upgrading golang.org/x/net to v0.58.0. CVSS 6.1 Medium.
+* provider: Address CVE-2026-42502 by upgrading golang.org/x/net to v0.58.0. CVSS 6.1 Medium.
+* provider: Address CVE-2026-25681 by upgrading golang.org/x/net to v0.58.0. CVSS 6.1 Medium.
+* provider: Address CVE-2026-27136 by upgrading golang.org/x/net to v0.58.0. CVSS 6.1 Medium.
+* provider: Address CVE-2026-46595 by upgrading golang.org/x/crypto to v0.55.0. CVSS 10.0 Critical.
+* provider: Address CVE-2026-42508 by upgrading golang.org/x/crypto to v0.55.0. CVSS 9.1 Critical.
+* provider: Address CVE-2026-39834 by upgrading golang.org/x/crypto to v0.55.0. CVSS 9.1 Critical.
+* provider: Address CVE-2026-39833 by upgrading golang.org/x/crypto to v0.55.0. CVSS 9.1 Critical.
+* provider: Address CVE-2026-39832 by upgrading golang.org/x/crypto to v0.55.0. CVSS 9.1 Critical.
+* provider: Address CVE-2026-39831 by upgrading golang.org/x/crypto to v0.55.0. CVSS 9.1 Critical.
+* provider: Address CVE-2026-39830 by upgrading golang.org/x/crypto to v0.55.0. CVSS 9.1 Critical.
+* provider: Address CVE-2026-39829 by upgrading golang.org/x/crypto to v0.55.0. CVSS 7.5 High.
+* provider: Address CVE-2026-46597 by upgrading golang.org/x/crypto to v0.55.0. CVSS 7.5 High.
+* provider: Address CVE-2026-39828 by upgrading golang.org/x/crypto to v0.55.0. CVSS 6.3 Medium.
+* provider: Address CVE-2026-39827 by upgrading golang.org/x/crypto to v0.55.0. CVSS 6.5 Medium.
+* provider: Address CVE-2026-39835 by upgrading golang.org/x/crypto to v0.55.0. CVSS 5.3 Medium.
+* provider: Address CVE-2026-46598 by upgrading golang.org/x/crypto to v0.55.0. CVSS 5.3 Medium.
+
+## 3.1.12 (Jul 31, 2026). Tested on JFrog Platform 11.6.0 (Artifactory 7.161.15, Xray 3.150.19, Catalog 1.43.3) with Terraform 1.15.8 and OpenTofu 1.12.5
+
+BUG FIXES:
+
+* resource/xray_repository_config: Fix perpetual diff on the `paths_config` block when `pattern.exclude` is not set. The API returns an empty string for an unset exclusion, which was stored in state as an empty string instead of null, so every `terraform plan` showed the whole `paths_config` block being removed and re-added.
+
+* resource/xray_curation_policy: Fix false `Decision owners required` validation error when `decision_owners` is sourced from another resource, module variable, or other value that is unknown until apply, while `waiver_request_config = "manual"`. The `decisionOwnersRequiredValidator` now skips unknown values and defers validation to the plan phase. Issue: [#433](https://github.com/jfrog/terraform-provider-xray/issues/433)
+
+* resource/xray_curation_policy: Add `block_from_cache` attribute so the "Enforce policy on cached packages" setting is read from and written to the API instead of being silently reset to `false` on every update. Issue: [#431](https://github.com/jfrog/terraform-provider-xray/issues/431) PR: [#435](https://github.com/jfrog/terraform-provider-xray/pull/435)
+
+## 3.1.11(Jun 9, 2026).
+
+BUG FIXES:
+
+* resource/xray_catalog_labels: Preserve package names containing `:` when updating package version assignments. Issue: [#415](https://github.com/jfrog/terraform-provider-xray/issues/415) PR: [#417](https://github.com/jfrog/terraform-provider-xray/pull/417)
+
+* resource/xray_catalog_labels: Fix `name` and `description` field length validations. Issue: [#403](https://github.com/jfrog/terraform-provider-xray/issues/403) PR: [#420](https://github.com/jfrog/terraform-provider-xray/pull/420)
+
+## 3.1.10 (April 13, 2026). Tested on JFrog Platform 11.4.6 (Artifactory 7.133.18, Xray 3.137.27, Catalog 1.35.2). 
+
+BUG FIXES:
+
+* resource/xray_curation_policy: Fix validation error when `repo_include`, `repo_exclude`, or `pkg_types_include` are passed through module variables or computed from `for_each` expressions. The validator now correctly skips validation for unknown values during Terraform's plan phase.
+
+FEATURES:
+
+* resource/xray_security_policy: Add `sast` block to `rule.criteria` for SAST policy rules with `min_severity` support. Only supported by JFrog Advanced Security. PR: [#407](https://github.com/jfrog/terraform-provider-xray/pull/407)
+
+
+## 3.1.9 (April 07, 2026). Tested on JFrog Platform 11.4.6 (Artifactory 7.133.17, Xray 3.137.27, Catalog 1.35.0) with Terraform 1.14.8 and OpenTofu 1.11.5
+
+IMPROVEMENTS:
+
+* resource/xray_security_policy, resource/xray_license_policy, resource/xray_operational_risk_policy: Add `grace_period_days` to the `rule.actions.block_download` block, matching the Xray Policy REST API `grace_period_days` field on `block_download`. PR: [#404](https://github.com/jfrog/terraform-provider-xray/pull/404)
+
+BUG FIXES:
+
+* resource/xray_security_policy: Fix state drift for `criteria.exposures.min_severity` when set to `All severities` caused by casing mismatch between Xray API response and provider validator. PR: [#406](https://github.com/jfrog/terraform-provider-xray/pull/406)
+
+* resource/xray_security_policy: Relax `package_versions` validation so hyphenated and other Xray-supported version strings match the API. Issue: [#402](https://github.com/jfrog/terraform-provider-xray/issues/402) PR: [#405](https://github.com/jfrog/terraform-provider-xray/pull/405)
+
+## 3.1.8 (April 01, 2026). Tested on JFrog Platform 11.4.5 (Artifactory 7.133.15, Xray 3.137.27, Catalog 1.35.0) with Terraform 1.14.8 and OpenTofu 1.11.5
+
+BUG FIXES:
+
+* resource/xray_custom_issue: Fix `xray_custom_issue` Read returns error instead of removing resource from state when remote resource does not exist (HTTP 404). Issue: [#398](https://github.com/jfrog/terraform-provider-xray/issues/398) PR: [#401](https://github.com/jfrog/terraform-provider-xray/pull/401)
+
+## 3.1.7 (Mar 11, 2026). Tested on JFrog Platform 11.4.4 (Artifactory 7.133.12, Xray 3.137.23, Catalog 1.33.4) with Terraform 1.14.6 and OpenTofu 1.11.5
+
+FEATURES:
+
+* resource/xray_security_policy, resource/xray_license_policy, resource/xray_operational_risk_policy: Add `fail_pull_request` attribute to policy rule actions. Issue: [#383](https://github.com/jfrog/terraform-provider-xray/issues/383) PR: [#396](https://github.com/jfrog/terraform-provider-xray/pull/396)
+
+BUG FIXES:
+
+* resource/xray_catalog_labels: Fix Read method to query Xray for current label state instead of preserving stale Terraform state. Out-of-band changes to label descriptions are now detected during `terraform refresh` and `terraform apply -refresh-only`. Issue: [#381](https://github.com/jfrog/terraform-provider-xray/issues/381) PR: [#397](https://github.com/jfrog/terraform-provider-xray/pull/397)
+
+* resource/xray_custom_issue: Fix create stores ID but Read/Update/Delete use name as API path parameter Issue: [#382](https://github.com/jfrog/terraform-provider-xray/issues/382) PR: [#387](https://github.com/jfrog/terraform-provider-xray/pull/387)
+
+## 3.1.6 (Feb 04, 2026). Tested on JFrog Platform 11.4.2 (Artifactory 7.133.6, Xray 3.137.16, Catalog 1.31.3) with Terraform 1.14.4 and OpenTofu 1.11.4
 
 IMPROVEMENTS:
 
 * resource/xray_repository_config: Add support for gradle,go,ruby,alpine,deb,rpm package types for exposure analysis. PR: [#378](https://github.com/jfrog/terraform-provider-xray/pull/378)
 
-## 3.1.5 (Dec 11,2025). Tested on JFrog Platform 11.3.3 (Artifactory 7.125.8, Xray 3.131.25, Catalog 1.28.3) with Terraform 1.14.1 and OpenTofu 1.11.1
+## 3.1.5 (Dec 11, 2025). Tested on JFrog Platform 11.3.3 (Artifactory 7.125.8, Xray 3.131.25, Catalog 1.28.3) with Terraform 1.14.1 and OpenTofu 1.11.1
 
 BUG FIXES:
 

@@ -25,12 +25,26 @@ resource "xray_catalog_labels" "{{ .name }}" {
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		Steps: []resource.TestStep{{Config: cfg,
-			Check: resource.ComposeTestCheckFunc(
-				resource.TestCheckResourceAttr(fqrn, "labels.#", "2"),
-				resource.TestCheckResourceAttr(fqrn, "labels.0.name", "tacc1"),
-			),
-		}},
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "labels.#", "2"),
+					resource.TestCheckTypeSetElemNestedAttrs(fqrn, "labels.*", map[string]string{
+						"name":        "tacc1",
+						"description": "d1",
+					}),
+					resource.TestCheckTypeSetElemNestedAttrs(fqrn, "labels.*", map[string]string{
+						"name":        "tacc2",
+						"description": "d2",
+					}),
+				),
+			},
+			{
+				Config:   cfg,
+				PlanOnly: true,
+			},
+		},
 	})
 }
 
@@ -51,13 +65,29 @@ resource "xray_catalog_labels" "{{ .name }}" {
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
-		Steps: []resource.TestStep{{Config: cfg,
-			Check: resource.ComposeTestCheckFunc(
-				resource.TestCheckResourceAttr(fqrn, "labels.#", "1"),
-				resource.TestCheckResourceAttr(fqrn, "package_assignments.#", "1"),
-				resource.TestCheckResourceAttr(fqrn, "version_assignments.#", "1"),
-			),
-		}},
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "labels.#", "1"),
+					resource.TestCheckTypeSetElemNestedAttrs(fqrn, "labels.*", map[string]string{
+						"name":        "tass1",
+						"description": "d1",
+					}),
+					resource.TestCheckResourceAttr(fqrn, "package_assignments.#", "1"),
+					resource.TestCheckTypeSetElemNestedAttrs(fqrn, "package_assignments.*", map[string]string{
+						"label_name":   "tass1",
+						"package_name": "express",
+						"package_type": "npm",
+					}),
+					resource.TestCheckResourceAttr(fqrn, "version_assignments.#", "1"),
+				),
+			},
+			{
+				Config:   cfg,
+				PlanOnly: true,
+			},
+		},
 	})
 }
 
@@ -91,21 +121,45 @@ resource "xray_catalog_labels" "{{ .name }}" {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
-			{Config: cfg1},
-			{Config: cfg2, Check: resource.ComposeTestCheckFunc(
-				resource.TestCheckResourceAttr(fqrn, "labels.#", "1"),
-			)},
+			{
+				Config: cfg1,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "labels.#", "1"),
+					resource.TestCheckTypeSetElemNestedAttrs(fqrn, "labels.*", map[string]string{
+						"name":        "tupd1",
+						"description": "d1",
+					}),
+				),
+			},
+			{
+				Config: cfg2,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "labels.#", "1"),
+					resource.TestCheckTypeSetElemNestedAttrs(fqrn, "labels.*", map[string]string{
+						"name":        "tupd1",
+						"description": "d1-updated",
+					}),
+					resource.TestCheckResourceAttr(fqrn, "package_assignments.#", "1"),
+					resource.TestCheckResourceAttr(fqrn, "version_assignments.#", "1"),
+				),
+			},
 		},
 	})
 }
 
 func TestAccCatalogLabels_LabelNameValidation(t *testing.T) {
 	_, _, resName := testutil.MkNames("catalog-labels-nameval-", "xray_catalog_labels")
+	// name > 1,000
+	length := 1010
+	n := make([]byte, 0, length)
+	for i := 0; i < length; i++ {
+		n = append(n, 'a')
+	}
 	cfg := util.ExecuteTemplate("TestAccCatalogLabels_LabelNameValidation", `
 resource "xray_catalog_labels" "{{ .name }}" {
-  labels = [ { name = "this-name-is-way-too-long", description = "d1" } ]
+  labels = [ { name = "{{ .longName }}", description = "d1" } ]
 }
-`, map[string]string{"name": resName})
+`, map[string]string{"name": resName, "longName": string(n)})
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
 		Steps: []resource.TestStep{{
@@ -117,9 +171,10 @@ resource "xray_catalog_labels" "{{ .name }}" {
 
 func TestAccCatalogLabels_LabelDescriptionValidation(t *testing.T) {
 	_, _, resName := testutil.MkNames("catalog-labels-descval-", "xray_catalog_labels")
-	// description > 300
-	d := make([]byte, 0, 310)
-	for i := 0; i < 310; i++ {
+	// description > 10,000
+	length := 10010
+	d := make([]byte, 0, length)
+	for i := 0; i < length; i++ {
 		d = append(d, 'a')
 	}
 	cfg := util.ExecuteTemplate("TestAccCatalogLabels_LabelDescriptionValidation", `
@@ -211,11 +266,39 @@ resource "xray_catalog_labels" "{{ .name }}" {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
-			{Config: cfg},
-			{PlanOnly: true, Config: cfg, ExpectNonEmptyPlan: false},
-			{Config: cfg, Check: resource.ComposeTestCheckFunc(
-				resource.TestCheckResourceAttr(fqrn, "labels.#", "1"),
-			)},
+			{
+				Config: cfg,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "labels.#", "1"),
+					resource.TestCheckTypeSetElemNestedAttrs(fqrn, "labels.*", map[string]string{
+						"name":        "tread1",
+						"description": "d1",
+					}),
+					resource.TestCheckResourceAttr(fqrn, "package_assignments.#", "1"),
+					resource.TestCheckResourceAttr(fqrn, "version_assignments.#", "1"),
+				),
+			},
+			{
+				Config:   cfg,
+				PlanOnly: true,
+			},
+			{
+				Config: cfg,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "labels.#", "1"),
+					resource.TestCheckTypeSetElemNestedAttrs(fqrn, "labels.*", map[string]string{
+						"name":        "tread1",
+						"description": "d1",
+					}),
+					resource.TestCheckResourceAttr(fqrn, "package_assignments.#", "1"),
+					resource.TestCheckTypeSetElemNestedAttrs(fqrn, "package_assignments.*", map[string]string{
+						"label_name":   "tread1",
+						"package_name": "express",
+						"package_type": "npm",
+					}),
+					resource.TestCheckResourceAttr(fqrn, "version_assignments.#", "1"),
+				),
+			},
 		},
 	})
 }
@@ -350,11 +433,21 @@ resource "xray_catalog_labels" "{{ .name }}" {
 		Steps: []resource.TestStep{
 			{Config: cfg},
 			{
-				ResourceName:  fqrn,
-				ImportState:   true,
-				ImportStateId: "imp1,imp2",
-				// Descriptions are not populated on import; just ensure it imports without error
+				ResourceName:      fqrn,
+				ImportState:       true,
+				ImportStateId:     "imp1,imp2",
 				ImportStateVerify: false,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "labels.#", "2"),
+					resource.TestCheckTypeSetElemNestedAttrs(fqrn, "labels.*", map[string]string{
+						"name":        "imp1",
+						"description": "d1",
+					}),
+					resource.TestCheckTypeSetElemNestedAttrs(fqrn, "labels.*", map[string]string{
+						"name":        "imp2",
+						"description": "d2",
+					}),
+				),
 			},
 		},
 	})

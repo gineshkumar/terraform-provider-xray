@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/jfrog/terraform-provider-shared/testutil"
 	"github.com/jfrog/terraform-provider-xray/v3/pkg/acctest"
 )
@@ -2586,6 +2587,283 @@ func TestAccCurationPolicy_EdgeCases(t *testing.T) {
 				`, name, name, conditionName),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(fqrn, "notify_emails.#", "5"),
+				),
+			},
+		},
+	})
+}
+
+// TestAccCurationPolicy_ComputedRepoInclude tests the bug fix for unknown values.
+// Issue: Validator was incorrectly rejecting unknown values as empty during plan
+// Fix: Added IsUnknown() checks to defer validation until apply phase
+func TestAccCurationPolicy_ComputedRepoInclude(t *testing.T) {
+	_, fqrn, name := testutil.MkNames("test-computed-repo", "xray_curation_policy")
+	conditionName := fmt.Sprintf("test-computed-condition-%d", testutil.RandomInt())
+	repoName1 := fmt.Sprintf("computed-test-%d-a", testutil.RandomInt())
+	repoName2 := fmt.Sprintf("computed-test-%d-b", testutil.RandomInt())
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		ExternalProviders:        commonExternalProviders,
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckCurationPolicy),
+		Steps: []resource.TestStep{
+			{
+				Config: createCVSSCondition(conditionName) + fmt.Sprintf(`
+					resource "artifactory_remote_npm_repository" "repo_a" {
+						key             = "%s"
+						url             = "https://registry.npmjs.org/"
+						repo_layout_ref = "npm-default"
+						curated         = true
+					}
+
+					resource "artifactory_remote_npm_repository" "repo_b" {
+						key             = "%s"
+						url             = "https://registry.npmjs.org/"
+						repo_layout_ref = "npm-default"
+						curated         = true
+					}
+
+					resource "xray_curation_policy" "%s" {
+						name         = "%s"
+						condition_id = xray_custom_curation_condition.%s.id
+						scope        = "specific_repos"
+						repo_include = [
+							artifactory_remote_npm_repository.repo_a.key,
+							artifactory_remote_npm_repository.repo_b.key,
+						]
+						policy_action         = "block"
+						waiver_request_config = "forbidden"
+					}
+				`, repoName1, repoName2, name, name, conditionName),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "name", name),
+					resource.TestCheckResourceAttr(fqrn, "scope", "specific_repos"),
+					resource.TestCheckResourceAttr(fqrn, "repo_include.#", "2"),
+					resource.TestCheckResourceAttr(fqrn, "policy_action", "block"),
+					resource.TestCheckResourceAttr(fqrn, "waiver_request_config", "forbidden"),
+				),
+			},
+		},
+	})
+}
+
+// When decision_owners is sourced from
+// another resource (so the whole set is unknown until apply), the
+// decisionOwnersRequiredValidator used to raise a false "Decision owners
+// required" error during plan instead of deferring validation. Here
+// decision_owners is fed from terraform_data.owners.output, whose value is
+// unknown at plan time; the validator must skip it and let apply resolve it.
+func TestAccCurationPolicy_ComputedDecisionOwners(t *testing.T) {
+	_, fqrn, name := testutil.MkNames("test-computed-owners", "xray_curation_policy")
+	conditionName := fmt.Sprintf("test-computed-owners-condition-%d", testutil.RandomInt())
+	repoName := fmt.Sprintf("computed-owners-repo-%d", testutil.RandomInt())
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		ExternalProviders:        commonExternalProviders,
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckCurationPolicy),
+		Steps: []resource.TestStep{
+			{
+				Config: createCVSSCondition(conditionName) + fmt.Sprintf(`
+					resource "artifactory_remote_npm_repository" "repo" {
+						key             = "%s"
+						url             = "https://registry.npmjs.org/"
+						repo_layout_ref = "npm-default"
+						curated         = true
+					}
+
+					# output is computed, so decision_owners is unknown at plan time
+					resource "terraform_data" "owners" {
+						input = ["readers"]
+					}
+
+					resource "xray_curation_policy" "%s" {
+						name                  = "%s"
+						condition_id          = xray_custom_curation_condition.%s.id
+						scope                 = "specific_repos"
+						repo_include          = [artifactory_remote_npm_repository.repo.key]
+						policy_action         = "block"
+						waiver_request_config = "manual"
+						decision_owners       = terraform_data.owners.output
+					}
+				`, repoName, name, name, conditionName),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(fqrn, "name", name),
+					resource.TestCheckResourceAttr(fqrn, "scope", "specific_repos"),
+					resource.TestCheckResourceAttr(fqrn, "waiver_request_config", "manual"),
+					resource.TestCheckResourceAttr(fqrn, "decision_owners.#", "1"),
+					resource.TestCheckTypeSetElemAttr(fqrn, "decision_owners.*", "readers"),
+				),
+			},
+		},
+	})
+}
+
+// block_from_cache = true requires the platform-level "Enable Curation for Cached
+// Packages" feature (backed by a Valkey cache), which is absent on most environments
+// and cannot be toggled via a public API. Without it the Xray API rejects the policy
+// with "block from cache is not enabled in curation config", so the steps that set it
+// to true only run when XRAY_CURATION_BLOCK_FROM_CACHE_ENABLED is set.
+func TestAccCurationPolicy_BlockFromCache(t *testing.T) {
+	_, fqrn, name := testutil.MkNames("test-block-from-cache", "xray_curation_policy")
+	repoName := fmt.Sprintf("block-from-cache-npm-%d", testutil.RandomInt())
+	conditionName := fmt.Sprintf("test-maturity-condition-%d", testutil.RandomInt())
+
+	repoConfig := createCuratedRepoConfig("npm", repoName)
+
+	policyConfig := func(blockFromCache string) string {
+		bfc := ""
+		if blockFromCache != "" {
+			bfc = fmt.Sprintf("block_from_cache = %s", blockFromCache)
+		}
+		return repoConfig + createMaturityCondition(conditionName) + fmt.Sprintf(`
+			resource "xray_curation_policy" "%s" {
+				name                  = "%s"
+				condition_id          = xray_custom_curation_condition.%s.id
+				scope                 = "all_repos"
+				policy_action         = "block"
+				waiver_request_config = "forbidden"
+				notify_emails         = ["audit-team@company.com"]
+				%s
+			}
+		`, name, name, conditionName, bfc)
+	}
+
+	steps := []resource.TestStep{
+		{
+			// Create the curated repository before the policy references it
+			Config: repoConfig,
+			Check: resource.ComposeTestCheckFunc(
+				resource.TestCheckResourceAttr(fmt.Sprintf("artifactory_remote_npm_repository.%s", repoName), "key", repoName),
+				resource.TestCheckResourceAttr(fmt.Sprintf("artifactory_remote_npm_repository.%s", repoName), "curated", "true"),
+			),
+		},
+		{
+			// Omitting the attribute defaults it to false
+			Config: policyConfig(""),
+			Check: resource.ComposeTestCheckFunc(
+				resource.TestCheckResourceAttr(fqrn, "policy_action", "block"),
+				resource.TestCheckResourceAttr(fqrn, "block_from_cache", "false"),
+			),
+		},
+	}
+
+	if os.Getenv("XRAY_CURATION_BLOCK_FROM_CACHE_ENABLED") != "" {
+		steps = append(steps,
+			resource.TestStep{
+				Config: policyConfig("true"),
+				Check:  resource.TestCheckResourceAttr(fqrn, "block_from_cache", "true"),
+			},
+			resource.TestStep{
+				// Updating the policy must not silently reset the flag
+				Config: policyConfig("true"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+			resource.TestStep{
+				ResourceName:      fqrn,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			resource.TestStep{
+				Config: policyConfig("false"),
+				Check:  resource.TestCheckResourceAttr(fqrn, "block_from_cache", "false"),
+			},
+		)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		ExternalProviders:        commonExternalProviders,
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckCurationPolicy),
+		Steps:                    steps,
+	})
+}
+
+// share_with_federation is only valid for all_repos or pkg_types scopes. This test
+// verifies the flag round-trips through Create/Read/Update/Import for an all_repos
+// policy and defaults to false when omitted.
+func TestAccCurationPolicy_ShareWithFederation(t *testing.T) {
+	_, fqrn, name := testutil.MkNames("test-share-with-federation", "xray_curation_policy")
+	conditionName := fmt.Sprintf("test-maturity-condition-%d", testutil.RandomInt())
+	sharedRepoConfig := getSharedRepoConfig()
+
+	policyConfig := func(shareWithFederation string) string {
+		swf := ""
+		if shareWithFederation != "" {
+			swf = fmt.Sprintf("share_with_federation = %s", shareWithFederation)
+		}
+		// all_repos policies are rejected when no curated remotes exist
+		// ("policy cannot have empty effective scope"). Create them first.
+		return sharedRepoConfig +
+			createMaturityCondition(conditionName) + fmt.Sprintf(`
+			resource "xray_curation_policy" "%s" {
+				name                  = "%s"
+				condition_id          = xray_custom_curation_condition.%s.id
+				scope                 = "all_repos"
+				policy_action         = "block"
+				waiver_request_config = "forbidden"
+				notify_emails         = ["audit-team@company.com"]
+				%s
+			}
+		`, name, name, conditionName, swf)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(t) },
+		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories,
+		ExternalProviders:        commonExternalProviders,
+		CheckDestroy:             acctest.VerifyDeleted(fqrn, "", acctest.CheckCurationPolicy),
+		Steps: []resource.TestStep{
+			{
+				// Create curated remotes so all_repos has a non-empty effective scope
+				Config: sharedRepoConfig,
+				Check:  resource.ComposeTestCheckFunc(getSharedRepoVerification()...),
+			},
+			{
+				// Omitting the attribute defaults it to false
+				Config: policyConfig(""),
+				Check: resource.ComposeTestCheckFunc(
+					append(getSharedRepoVerification(),
+						resource.TestCheckResourceAttr(fqrn, "policy_action", "block"),
+						resource.TestCheckResourceAttr(fqrn, "share_with_federation", "false"),
+					)...,
+				),
+			},
+			{
+				Config: policyConfig("true"),
+				Check: resource.ComposeTestCheckFunc(
+					append(getSharedRepoVerification(),
+						resource.TestCheckResourceAttr(fqrn, "share_with_federation", "true"),
+					)...,
+				),
+			},
+			{
+				// Updating the policy must not silently reset the flag
+				Config: policyConfig("true"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+			{
+				ResourceName:      fqrn,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				Config: policyConfig("false"),
+				Check: resource.ComposeTestCheckFunc(
+					append(getSharedRepoVerification(),
+						resource.TestCheckResourceAttr(fqrn, "share_with_federation", "false"),
+					)...,
 				),
 			},
 		},

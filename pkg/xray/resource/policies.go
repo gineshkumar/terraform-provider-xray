@@ -2,10 +2,12 @@ package xray
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
 
+	"github.com/go-resty/resty/v2"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
@@ -95,6 +97,12 @@ var toActionsAPIModel = func(ctx context.Context, actionsElems []attr.Value) (Po
 
 			blockDownload.Unscanned = attrs["unscanned"].(types.Bool).ValueBool()
 			blockDownload.Active = attrs["active"].(types.Bool).ValueBool()
+			if gp, ok := attrs["grace_period_days"]; ok {
+				gpInt := gp.(types.Int64)
+				if !gpInt.IsNull() && !gpInt.IsUnknown() {
+					blockDownload.GracePeriodDays = gpInt.ValueInt64()
+				}
+			}
 		}
 
 		actions.Webhooks = webhooks
@@ -106,6 +114,9 @@ var toActionsAPIModel = func(ctx context.Context, actionsElems []attr.Value) (Po
 		actions.NotifyWatchRecipients = attrs["notify_watch_recipients"].(types.Bool).ValueBool()
 		actions.NotifyDeployer = attrs["notify_deployer"].(types.Bool).ValueBool()
 		actions.CreateJiraTicketEnabled = attrs["create_ticket_enabled"].(types.Bool).ValueBool()
+		actions.FailPullRequest = &FailPullRequestAPIModel{
+			Active: attrs["fail_pull_request"].(types.Bool).ValueBool(),
+		}
 		actions.FailureGracePeriodDays = attrs["build_failure_grace_period_in_days"].(types.Int64).ValueInt64()
 	}
 
@@ -164,6 +175,7 @@ var actionsAttrTypes = map[string]attr.Type{
 	"notify_deployer":                    types.BoolType,
 	"notify_watch_recipients":            types.BoolType,
 	"create_ticket_enabled":              types.BoolType,
+	"fail_pull_request":                  types.BoolType,
 	"build_failure_grace_period_in_days": types.Int64Type,
 }
 
@@ -197,8 +209,9 @@ var fromActionsAPIModel = func(ctx context.Context, actionsAPIModel PolicyRuleAc
 	blockDownload, d := types.ObjectValue(
 		blockDownloadAttrTypes,
 		map[string]attr.Value{
-			"unscanned": types.BoolValue(actionsAPIModel.BlockDownload.Unscanned),
-			"active":    types.BoolValue(actionsAPIModel.BlockDownload.Active),
+			"unscanned":         types.BoolValue(actionsAPIModel.BlockDownload.Unscanned),
+			"active":            types.BoolValue(actionsAPIModel.BlockDownload.Active),
+			"grace_period_days": types.Int64Value(actionsAPIModel.BlockDownload.GracePeriodDays),
 		},
 	)
 	if d.HasError() {
@@ -224,6 +237,7 @@ var fromActionsAPIModel = func(ctx context.Context, actionsAPIModel PolicyRuleAc
 			"notify_deployer":                    types.BoolValue(actionsAPIModel.NotifyDeployer),
 			"notify_watch_recipients":            types.BoolValue(actionsAPIModel.NotifyWatchRecipients),
 			"create_ticket_enabled":              types.BoolValue(actionsAPIModel.CreateJiraTicketEnabled),
+			"fail_pull_request":                  types.BoolValue(actionsAPIModel.FailPullRequest != nil && actionsAPIModel.FailPullRequest.Active),
 			"build_failure_grace_period_in_days": types.Int64Value(actionsAPIModel.FailureGracePeriodDays),
 		},
 	)
@@ -311,7 +325,10 @@ func (m *PolicyResourceModel) fromAPIModel(
 
 	m.ID = types.StringValue(apiModel.Name)
 	m.Name = types.StringValue(apiModel.Name)
-	m.Description = types.StringValue(apiModel.Description)
+	m.Description = types.StringNull()
+	if len(apiModel.Description) > 0 {
+		m.Description = types.StringValue(apiModel.Description)
+	}
 	m.Type = types.StringValue(apiModel.Type)
 	m.Author = types.StringValue(apiModel.Author)
 	m.Created = types.StringValue(apiModel.Created)
@@ -341,6 +358,17 @@ var commonActionsBlocks = map[string]schema.Block{
 						boolplanmodifier.UseStateForUnknown(),
 					},
 					Description: "Whether or not to block download of artifacts that meet the artifact and severity `filters` for the associated `xray_watch` resource. Default value is `false`.",
+				},
+				"grace_period_days": schema.Int64Attribute{
+					Optional: true,
+					Computed: true,
+					PlanModifiers: []planmodifier.Int64{
+						int64planmodifier.UseStateForUnknown(),
+					},
+					Validators: []validator.Int64{
+						int64validator.AtLeast(0),
+					},
+					Description: "Grace period in days before blocking download of artifacts that meet the policy. Matches the Xray Policy REST API `grace_period_days` on `block_download`. Default is `0`.",
 				},
 			},
 		},
@@ -416,6 +444,14 @@ var commonActionsAttrs = map[string]schema.Attribute{
 			boolplanmodifier.UseStateForUnknown(),
 		},
 		Description: "Create Jira Ticket for this Policy Violation. Requires configured Jira integration. Default value is `false`.",
+	},
+	"fail_pull_request": schema.BoolAttribute{
+		Optional: true,
+		Computed: true,
+		PlanModifiers: []planmodifier.Bool{
+			boolplanmodifier.UseStateForUnknown(),
+		},
+		Description: "Whether or not the related pull request should be marked as failed if a violation is triggered. Default value is `false`.",
 	},
 	"build_failure_grace_period_in_days": schema.Int64Attribute{
 		Optional: true,
@@ -539,6 +575,10 @@ type PolicyExposuresAPIModel struct {
 	Iac          *bool   `json:"iac,omitempty"`
 }
 
+type PolicySASTAPIModel struct {
+	MinSeverity string `json:"min_severity,omitempty"`
+}
+
 type OperationalRiskCriteriaAPIModel struct {
 	UseAndCondition               bool   `json:"use_and_condition"`
 	IsEOL                         bool   `json:"is_eol"`
@@ -560,6 +600,7 @@ type PolicyRuleCriteriaAPIModel struct {
 	MaliciousPackage    *bool                    `json:"malicious_package,omitempty"`
 	VulnerabilityIds    []string                 `json:"vulnerability_ids,omitempty"`
 	Exposures           *PolicyExposuresAPIModel `json:"exposures,omitempty"`
+	SAST                *PolicySASTAPIModel      `json:"sast,omitempty"`
 	PackageName         string                   `json:"package_name,omitempty"`
 	PackageType         string                   `json:"package_type,omitempty"`
 	PackageVersions     []string                 `json:"package_versions,omitempty"`
@@ -584,8 +625,13 @@ type PolicyRuleCriteriaAPIModel struct {
 }
 
 type BlockDownloadSettingsAPIModel struct {
-	Unscanned bool `json:"unscanned"`
-	Active    bool `json:"active"`
+	Unscanned       bool  `json:"unscanned"`
+	Active          bool  `json:"active"`
+	GracePeriodDays int64 `json:"grace_period_days"`
+}
+
+type FailPullRequestAPIModel struct {
+	Active bool `json:"active"`
 }
 
 type PolicyRuleActionsAPIModel struct {
@@ -598,6 +644,7 @@ type PolicyRuleActionsAPIModel struct {
 	NotifyWatchRecipients          bool                          `json:"notify_watch_recipients"`
 	NotifyDeployer                 bool                          `json:"notify_deployer"`
 	CreateJiraTicketEnabled        bool                          `json:"create_ticket_enabled"`
+	FailPullRequest                *FailPullRequestAPIModel      `json:"fail_pull_request,omitempty"`
 	FailureGracePeriodDays         int64                         `json:"build_failure_grace_period_in_days"`
 	// License Actions
 	CustomSeverity string `json:"custom_severity,omitempty"`
@@ -623,6 +670,88 @@ type PolicyAPIModel struct {
 
 type PolicyError struct {
 	Error string `json:"error"`
+}
+
+func policyReadBackRequest(client *resty.Client, projectKey string) (*resty.Request, error) {
+	request, err := getRestyRequest(client, projectKey)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "")
+	return request, nil
+}
+
+func policyErrorMessage(response *resty.Response, policyError PolicyError) string {
+	if policyError.Error != "" {
+		return policyError.Error
+	}
+	if response == nil {
+		return ""
+	}
+	return fmt.Sprintf("unexpected response, status: %d, body: %s", response.StatusCode(), response.String())
+}
+
+// preserveFailPullRequest copies fail_pull_request from the source API model
+// to the target API model. The Xray API accepts fail_pull_request in POST/PUT
+// but does not return it in GET responses, so we must preserve the value from
+// the plan or state to avoid state drift.
+func preserveFailPullRequest(source, target *[]PolicyRuleAPIModel) {
+	if source == nil || target == nil {
+		return
+	}
+	for i := range *target {
+		if i < len(*source) {
+			(*target)[i].Actions.FailPullRequest = (*source)[i].Actions.FailPullRequest
+		}
+	}
+}
+
+// extractFailPullRequestFromState extracts fail_pull_request values from the
+// Terraform state's rules list and applies them to the API model rules.
+func extractFailPullRequestFromState(state PolicyResourceModel, target *[]PolicyRuleAPIModel) {
+	if target == nil {
+		return
+	}
+
+	for i, elem := range state.Rules.Elements() {
+		if i >= len(*target) {
+			break
+		}
+
+		ruleObj, ok := elem.(types.Object)
+		if !ok {
+			continue
+		}
+
+		actionsAttr, ok := ruleObj.Attributes()["actions"]
+		if !ok {
+			continue
+		}
+
+		actionsList, ok := actionsAttr.(types.List)
+		if !ok || len(actionsList.Elements()) == 0 {
+			continue
+		}
+
+		actionsObj, ok := actionsList.Elements()[0].(types.Object)
+		if !ok {
+			continue
+		}
+
+		failPR, ok := actionsObj.Attributes()["fail_pull_request"]
+		if !ok {
+			continue
+		}
+
+		failPRBool, ok := failPR.(types.Bool)
+		if !ok || failPRBool.IsNull() || failPRBool.IsUnknown() {
+			continue
+		}
+
+		(*target)[i].Actions.FailPullRequest = &FailPullRequestAPIModel{
+			Active: failPRBool.ValueBool(),
+		}
+	}
 }
 
 func (r *PolicyResource) Create(
@@ -669,12 +798,21 @@ func (r *PolicyResource) Create(
 	}
 
 	if response.IsError() {
-		utilfw.UnableToCreateResourceError(resp, policyError.Error)
+		utilfw.UnableToCreateResourceError(resp, policyErrorMessage(response, policyError))
+		return
+	}
+
+	readRequest, err := policyReadBackRequest(r.ProviderData.Client, plan.ProjectKey.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"failed to get Resty client",
+			err.Error(),
+		)
 		return
 	}
 
 	var createdPolicy PolicyAPIModel
-	response, err = request.
+	response, err = readRequest.
 		SetResult(&createdPolicy).
 		SetPathParam("name", plan.Name.ValueString()).
 		SetError(&policyError).
@@ -686,9 +824,11 @@ func (r *PolicyResource) Create(
 	}
 
 	if response.IsError() {
-		utilfw.UnableToCreateResourceError(resp, policyError.Error)
+		utilfw.UnableToCreateResourceError(resp, policyErrorMessage(response, policyError))
 		return
 	}
+
+	preserveFailPullRequest(policy.Rules, createdPolicy.Rules)
 
 	resp.Diagnostics.Append(fromAPIModel(ctx, createdPolicy, &plan)...)
 	if resp.Diagnostics.HasError() {
@@ -744,9 +884,11 @@ func (r *PolicyResource) Read(
 	}
 
 	if response.IsError() {
-		utilfw.UnableToRefreshResourceError(resp, policyError.Error)
+		utilfw.UnableToRefreshResourceError(resp, policyErrorMessage(response, policyError))
 		return
 	}
+
+	extractFailPullRequestFromState(state, policy.Rules)
 
 	resp.Diagnostics.Append(fromAPIModel(ctx, policy, &state)...)
 	if resp.Diagnostics.HasError() {
@@ -803,12 +945,21 @@ func (r *PolicyResource) Update(
 	}
 
 	if response.IsError() {
-		utilfw.UnableToUpdateResourceError(resp, policyError.Error)
+		utilfw.UnableToUpdateResourceError(resp, policyErrorMessage(response, policyError))
+		return
+	}
+
+	readRequest, err := policyReadBackRequest(r.ProviderData.Client, plan.ProjectKey.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"failed to get Resty client",
+			err.Error(),
+		)
 		return
 	}
 
 	var updatedPolicy PolicyAPIModel
-	response, err = request.
+	response, err = readRequest.
 		SetResult(&updatedPolicy).
 		SetPathParam("name", plan.Name.ValueString()).
 		SetError(&policyError).
@@ -820,9 +971,11 @@ func (r *PolicyResource) Update(
 	}
 
 	if response.IsError() {
-		utilfw.UnableToUpdateResourceError(resp, policyError.Error)
+		utilfw.UnableToUpdateResourceError(resp, policyErrorMessage(response, policyError))
 		return
 	}
+
+	preserveFailPullRequest(policy.Rules, updatedPolicy.Rules)
 
 	resp.Diagnostics.Append(fromAPIModel(ctx, updatedPolicy, &plan)...)
 	if resp.Diagnostics.HasError() {
@@ -862,7 +1015,7 @@ func (r *PolicyResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	}
 
 	if response.IsError() {
-		utilfw.UnableToDeleteResourceError(resp, policyError.Error)
+		utilfw.UnableToDeleteResourceError(resp, policyErrorMessage(response, policyError))
 		return
 	}
 
