@@ -264,7 +264,7 @@ func (r *JiraIntegrationResource) Delete(ctx context.Context, req resource.Delet
 		utilfw.UnableToDeleteResourceError(resp, err.Error())
 		return
 	}
-	if response.IsError() {
+	if response.IsError() && response.StatusCode() != http.StatusNotFound {
 		utilfw.UnableToDeleteResourceError(resp, response.String())
 		return
 	}

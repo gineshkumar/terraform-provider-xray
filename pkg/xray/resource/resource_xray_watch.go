@@ -955,7 +955,7 @@ func (r *WatchResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 						Description: "Mapping of impact path profiles to Jira profiles.",
 					},
 				},
-				Description: "Ticket generation settings for the watch. Requires `create_ticket_enabled` to be `true`.",
+				Description: "Ticket generation settings for the watch. Requires `create_ticket_enabled` to be `true` and a non-empty `ticket_profile`.",
 			},
 			"assigned_policy": schema.SetNestedBlock{
 				NestedObject: schema.NestedBlockObject{
@@ -1207,6 +1207,24 @@ func (r WatchResource) ValidateConfig(ctx context.Context, req resource.Validate
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	if !config.TicketGeneration.IsNull() && !config.TicketGeneration.IsUnknown() {
+		if !config.TicketProfile.IsUnknown() && (config.TicketProfile.IsNull() || config.TicketProfile.ValueString() == "") {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("ticket_generation"),
+				"Invalid attribute values combination",
+				"`ticket_generation` requires a non-empty `ticket_profile`. Without a ticket profile, Xray returns default ticket generation settings that cannot be reconstructed into state.",
+			)
+		}
+
+		if !config.CreateTicketEnabled.IsUnknown() && !config.CreateTicketEnabled.ValueBool() {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("ticket_generation"),
+				"Invalid attribute values combination",
+				"`ticket_generation` requires `create_ticket_enabled` to be `true`.",
+			)
+		}
 	}
 
 	// If watch_resource is not configured, return without warning.
