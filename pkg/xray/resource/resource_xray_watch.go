@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -578,30 +579,34 @@ func (m *WatchResourceModel) fromAPIModel(ctx context.Context, apiModel WatchAPI
 	if hasTicketProfile && apiModel.TicketGeneration != nil {
 		tg := apiModel.TicketGeneration
 
-		ignoredViolation := types.BoolNull()
+		ignoredViolation := types.BoolValue(false)
 		if tg.CreateTicketsForIgnoredViolation != nil {
 			ignoredViolation = types.BoolValue(*tg.CreateTicketsForIgnoredViolation)
 		}
 
 		cdtVal := types.ObjectNull(createDuplicateTicketsAttributeTypes)
 		if tg.CreateDuplicateTickets != nil {
-			byVersion, ds := types.ObjectValue(
-				byVersionAttributeTypes,
-				map[string]attr.Value{
-					"build":          types.BoolValue(tg.CreateDuplicateTickets.ByVersion.Build),
-					"package":        types.BoolValue(tg.CreateDuplicateTickets.ByVersion.Package),
-					"release_bundle": types.BoolValue(tg.CreateDuplicateTickets.ByVersion.ReleaseBundle),
-				},
-			)
-			diags.Append(ds...)
+			bv := tg.CreateDuplicateTickets.ByVersion
+			// Omit Xray's all-false by_version default so an unset block does not drift.
+			if bv.Build || bv.Package || bv.ReleaseBundle {
+				byVersion, ds := types.ObjectValue(
+					byVersionAttributeTypes,
+					map[string]attr.Value{
+						"build":          types.BoolValue(bv.Build),
+						"package":        types.BoolValue(bv.Package),
+						"release_bundle": types.BoolValue(bv.ReleaseBundle),
+					},
+				)
+				diags.Append(ds...)
 
-			cdtVal, ds = types.ObjectValue(
-				createDuplicateTicketsAttributeTypes,
-				map[string]attr.Value{
-					"by_version": byVersion,
-				},
-			)
-			diags.Append(ds...)
+				cdtVal, ds = types.ObjectValue(
+					createDuplicateTicketsAttributeTypes,
+					map[string]attr.Value{
+						"by_version": byVersion,
+					},
+				)
+				diags.Append(ds...)
+			}
 		}
 
 		ipmVal := types.ObjectNull(impactPathProfilesMappingAttributeTypes)
@@ -908,7 +913,9 @@ func (r *WatchResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				Attributes: map[string]schema.Attribute{
 					"create_tickets_for_ignored_violation": schema.BoolAttribute{
 						Optional:    true,
-						Description: "Specifies whether Jira tickets should also be created for policy violations that have been marked as ignored in Xray.",
+						Computed:    true,
+						Default:     booldefault.StaticBool(false),
+						Description: "Specifies whether Jira tickets should also be created for policy violations that have been marked as ignored in Xray. Default: `false`.",
 					},
 				},
 				Blocks: map[string]schema.Block{
@@ -918,15 +925,21 @@ func (r *WatchResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 								Attributes: map[string]schema.Attribute{
 									"build": schema.BoolAttribute{
 										Optional:    true,
-										Description: "Indicates whether duplicate tickets are created for builds.",
+										Computed:    true,
+										Default:     booldefault.StaticBool(false),
+										Description: "Indicates whether duplicate tickets are created for builds. Default: `false`.",
 									},
 									"package": schema.BoolAttribute{
 										Optional:    true,
-										Description: "Indicates whether duplicate tickets are created for packages.",
+										Computed:    true,
+										Default:     booldefault.StaticBool(false),
+										Description: "Indicates whether duplicate tickets are created for packages. Default: `false`.",
 									},
 									"release_bundle": schema.BoolAttribute{
 										Optional:    true,
-										Description: "Indicates whether duplicate tickets are created for release bundles.",
+										Computed:    true,
+										Default:     booldefault.StaticBool(false),
+										Description: "Indicates whether duplicate tickets are created for release bundles. Default: `false`.",
 									},
 								},
 								Description: "Settings for creating duplicate tickets by version.",
